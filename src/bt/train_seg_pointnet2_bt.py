@@ -46,7 +46,7 @@ def parse_args():
     parser.add_argument('--dataset_folder', type=str,
                         default='/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3')
     parser.add_argument('--path_list_files', type=str,
-                        default='/home/m.caros/work/objectDetection/train_test_files/RGBN_40x40_barlow_p1/no_ground/')
+                        default='train_test_files/RGBN_40x40_barlow_p1/')
     parser.add_argument('--checkpoint', type=str, default='')
 
     return parser.parse_args()
