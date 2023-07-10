@@ -7,9 +7,9 @@ Airborne LiDAR systems have the capability to capture the Earth's surface  by ge
 
 ## Datasets
 ### LiDAR-CAT3
-training samples: 45.915
-training samples after semantic deduplication: 20.512
-test samples: 6.709
+training samples: 45.915 \\
+training samples after semantic deduplication: 20.512 \\
+test samples: 6.709 \\
 
 ### DALES
 Link [here](https://udayton.edu/engineering/research/centers/vision_lab/research/was_data_analysis_and_processing/dale.php)
