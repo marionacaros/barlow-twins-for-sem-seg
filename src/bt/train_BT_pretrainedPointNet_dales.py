@@ -12,12 +12,12 @@ dataset_folder = '/home/m.caros/work/dales_data/dales_40x40/train'
 n_points = 4096
 c_sample = False
 
-path_list_files = '/home/m.caros/work/objectDetection/train_test_files/dales_40x40_barlow/'
+path_list_files = 'train_test_files/dales_40x40_barlow/'
 
 # Datasets train / val / test
 with open(os.path.join(path_list_files, 'train_cls_files.txt'), 'r') as f:
     train_files = f.read().splitlines()
-with open(os.path.join(path_list_files, 'val_cls_files.txt'), 'r') as f:
+with open(os.path.join(path_list_files, 'train_labeled_cls_files.txt'), 'r') as f:
     val_files = f.read().splitlines()
 train_files = train_files + val_files
 
@@ -50,7 +50,7 @@ segmen_net = SegmentationPointNet(num_classes=NUM_CLASSES,
                                   is_barlow=True,
                                   channels_in=6)
 
-model_checkpoint = '/home/m.caros/work/objectDetection/src/checkpoints/03-25-23:13seg1024_c9DALES.pth'
+model_checkpoint = 'src/checkpoints/03-25-23:13seg1024_c9DALES.pth'
 # load models
 checkpoint = torch.load(model_checkpoint)
 segmen_net.load_state_dict(checkpoint['models'])
@@ -71,20 +71,20 @@ model = BarlowTwins(
     z_dim=z_dim
 )
 
-# chkp='/home/m.caros/work/objectDetection/src/bt/checkpoints_cls/BT_segmen/epoch=10-step=5016.ckpt'
+# chkp='src/bt/checkpoints_cls/BT_segmen/epoch=10-step=5016.ckpt'
 # ckpt_dict = torch.load(chkp)
 # models.load_state_dict(ckpt_dict['state_dict'])
 
 online_finetuner = OnlineFineTuner(encoder_output_dim=encoder_out_dim, num_classes=NUM_CLASSES)
 checkpoint_callback = ModelCheckpoint(save_top_k=100,
-                                      dirpath='/home/m.caros/work/objectDetection/src/bt/checkpoints_DALES',
+                                      dirpath='src/bt/checkpoints_DALES',
                                       monitor='val_loss')
 trainer = Trainer(
     max_epochs=max_epochs,
     accelerator="auto",
     devices=1 if torch.cuda.is_available() else None,  # limiting got iPython runs
     callbacks=[checkpoint_callback, online_finetuner],  # online_finetuner
-    default_root_dir='/home/m.caros/work/objectDetection/src/bt'
+    default_root_dir='src/bt'
 )
 torch.set_float32_matmul_precision('medium')
 trainer.fit(model, train_loader, val_loader)

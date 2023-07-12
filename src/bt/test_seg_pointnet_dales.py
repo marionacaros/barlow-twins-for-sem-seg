@@ -163,17 +163,17 @@ def test(dataset_folder,
         else:
             iou_8 = None
 
-        # mIoU = np.nanmean([np.array([iou_tower,iou_low_veg, iou_high_veg, iou_building],
-        #                             dtype=np.float64)])
+        mIoU = np.nanmean([np.array([iou_0, iou_1, iou_2, iou_3, iou_4, iou_5, iou_6, iou_7, iou_8],
+                                    dtype=np.float64)])
         # # pc, labels, targets, ious, name, path_plot = '', point_size = 1)
         # if 0 in set(targets) or 2 in set(targets):
-        #     plot_pointcloud_with_labels_barlow(pc.squeeze(0).numpy(),
-        #                                        preds,
-        #                                        targets,
-        #                                        mIoU,
-        #                                        file_name + 'no_ground' + '_preds',
-        #                                        path_plot=os.path.join(output_folder, 'figures'),
-        #                                        point_size=4)
+        plot_pointcloud_with_labels_DALES(pc.squeeze(0).numpy(),
+                                          preds,
+                                          targets,
+                                          mIoU,
+                                          str(round(mIoU, 2)) + file_name + '_preds',
+                                          path_plot=os.path.join(output_folder, 'figures'),
+                                          point_size=4)
 
     iou_arr = [np.mean(iou['0']), np.mean(iou['1']), np.mean(iou['2']), np.mean(iou['3']), np.mean(iou['4']),
                np.mean(iou['5']), np.mean(iou['6']), np.mean(iou['7']), np.mean(iou['8'])]
@@ -209,10 +209,11 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_folder', type=str, help='path to the dataset folder',
                         default='/home/m.caros/work/dales_data/dales_40x40/test')
     parser.add_argument('--output_folder', type=str,
-                        default='/home/m.caros/work/objectDetection/src/results',
+                        default='src/results/pointnet_dales',
                         help='output folder')
     parser.add_argument('--number_of_workers', type=int, default=0, help='number of workers for the dataloader')
-    parser.add_argument('--model_checkpoint', type=str, default='', help='models checkpoint path')
+    parser.add_argument('--model_checkpoint', type=str,
+                        default='src/bt/checkpoints_DALES/best/epoch=123-step=5332.ckpt', help='models checkpoint path')
     parser.add_argument('--path_list_files', type=str,
                         default='train_test_files/dales_40x40_barlow_10/')
 

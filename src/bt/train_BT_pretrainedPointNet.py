@@ -1,5 +1,5 @@
 from src.models.pointnet import ClassificationPointNet, SegmentationPointNet
-from src.datasets import BarlowTwinsDataset, BarlowTwinsDataset_no_ground
+from src.datasets import BarlowTwinsDataset
 from src.models.barlow_twins import *
 from pytorch_lightning.callbacks import ModelCheckpoint
 
@@ -12,32 +12,28 @@ dataset_folder = '/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3'
 n_points = 4500
 c_sample = False
 
-# path_list_files = '/home/m.caros/work/objectDetection/train_test_files/RGBN_40x40_barlow_p1/with_ground'
-path_list_files = '/home/m.caros/work/objectDetection/train_test_files/RGBN_40x40_barlow_p1/no_ground'
+path_list_files = 'train_test_files/RGBN_40x40_barlow_10'
 
 # Datasets train / val / test
 with open(os.path.join(path_list_files, 'train_reduced_files_semdedup0996.txt'), 'r') as f:
     train_files = f.read().splitlines()
-with open(os.path.join(path_list_files, 'val_cls_files.txt'), 'r') as f:
+with open(os.path.join(path_list_files, 'train_labeled_cls_files.txt'), 'r') as f:
     val_files = f.read().splitlines()
-# with open(os.path.join(path_list_files, 'val_object_files.txt'), 'r') as f:
-#     val_object_files = f.read().splitlines()
-# train_files = train_files + val_object_files
 
 # Initialize datasets
-train_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                             task='segmentation',
-                                             number_of_points=n_points,
-                                             files=train_files,
-                                             fixed_num_points=True,
-                                             c_sample=c_sample,
-                                             )
-val_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                           task='segmentation',
-                                           number_of_points=n_points,
-                                           files=val_files,
-                                           fixed_num_points=True,
-                                           c_sample=c_sample)
+train_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                   task='segmentation',
+                                   number_of_points=n_points,
+                                   files=train_files,
+                                   fixed_num_points=True,
+                                   c_sample=c_sample,
+                                   )
+val_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                 task='segmentation',
+                                 number_of_points=n_points,
+                                 files=val_files,
+                                 fixed_num_points=True,
+                                 c_sample=c_sample)
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                                            num_workers=num_workers, drop_last=True)
@@ -58,8 +54,8 @@ segmen_net = SegmentationPointNet(num_classes=NUM_CLASSES,
                                   device=DEVICE,
                                   is_barlow=True)
 
-# model_checkpoint = '/home/m.caros/work/objectDetection/src/checkpoints/03-28-15:53seg1024_c6b64.pth'
-model_checkpoint='/home/m.caros/work/objectDetection/src/checkpoints/04-03-12:06seg1024_c6web32ep96.pth'
+# model_checkpoint = 'src/checkpoints/03-28-15:53seg1024_c6b64.pth'
+model_checkpoint='src/checkpoints/04-03-12:06seg1024_c6web32ep96.pth'
 
 # load models
 checkpoint = torch.load(model_checkpoint)

@@ -9,7 +9,10 @@ from pytorch_lightning import Callback, LightningModule, Trainer
 from torch import Tensor
 from torchmetrics.functional import accuracy
 import os
+from torch.nn import Linear
 import torch.utils.data as data
+from sklearn.metrics import roc_curve
+from sklearn.metrics import auc
 from sklearn.metrics import f1_score
 
 

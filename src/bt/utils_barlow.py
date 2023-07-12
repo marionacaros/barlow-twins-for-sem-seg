@@ -4,9 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning import Callback, LightningModule, Trainer
 from torchmetrics.functional import accuracy
-import os
-from torch.nn import Linear
-import torch.utils.data as data
 from sklearn.metrics import roc_curve
 from sklearn.metrics import auc
 from sklearn.metrics import f1_score

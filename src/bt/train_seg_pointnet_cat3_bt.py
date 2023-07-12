@@ -2,14 +2,13 @@ import argparse
 import torch.optim as optim
 import time
 from torch.utils.tensorboard import SummaryWriter
-from src.datasets import BarlowTwinsDataset_no_ground
+from src.datasets import BarlowTwinsDataset
 from src.models.pointnet import SegmentationPointNet
 from src.models.barlow_twins import *
-from src.utils.utils import *
-from src.utils.get_metrics import *
+from utils.utils import *
+from utils.get_metrics import *
 import logging
 import datetime
-# from sklearn.metrics import balanced_accuracy_score
 from prettytable import PrettyTable
 import random
 
@@ -31,33 +30,26 @@ global NUM_CLASSES, GLOBAL_FEAT_SIZE
 def train(
         dataset_folder,
         path_list_files,
-        output_folder,
         n_points,
         batch_size,
         epochs,
         learning_rate,
         number_of_workers,
-        model_checkpoint,
-        c_sample):
-    start_time = time.time()
-    logging.info(f"Constrained sampling: {c_sample}")
+        model_checkpoint):
 
+    start_time = time.time()
     # Tensorboard location and plot names
     now = datetime.datetime.now()
     location = 'src/runs/tower_detec/bt/'
 
     # Datasets train / val / test
-    with open(os.path.join(path_list_files, 'val_cls_files.txt'), 'r') as f:
+    with open(os.path.join(path_list_files, 'train_labeled_cls_files.txt'), 'r') as f:
         train_files = f.read().splitlines()
 
     random.Random(4).shuffle(train_files)
     print('Length files: ', len(train_files))
-    # train_files = [file for file in train_files if 'tower_' in file]
     val_files = train_files[:round(len(train_files) * 0.1)]
     train_files = train_files[round(len(train_files) * 0.1):]
-
-    # with open(os.path.join(path_list_files, 'val_seg_files.txt'), 'r') as f:
-    #     val_files = f.read().splitlines()
 
     NAME = str(GLOBAL_FEAT_SIZE) + '_c' + str(NUM_CLASSES) + 'web32'
 
@@ -66,18 +58,18 @@ def train(
     logging.info(f"Tensorboard runs: {writer_train.get_logdir()}")
 
     # Initialize datasets
-    train_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                                 task='segmentation',
-                                                 number_of_points=n_points,
-                                                 files=train_files,
-                                                 fixed_num_points=True,
-                                                 use_ground=False)
-    val_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                               task='segmentation',
-                                               number_of_points=n_points,
-                                               files=val_files,
-                                               fixed_num_points=True,
-                                               use_ground=False)
+    train_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                       task='segmentation',
+                                       number_of_points=n_points,
+                                       files=train_files,
+                                       fixed_num_points=True,
+                                       use_ground=False)
+    val_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                     task='segmentation',
+                                     number_of_points=n_points,
+                                     files=val_files,
+                                     fixed_num_points=True,
+                                     use_ground=False)
 
     logging.info(f'Samples for training: {len(train_dataset)}')
     logging.info(f'Samples for validation: {len(val_dataset)}')
@@ -209,11 +201,9 @@ def train(
         scheduler_pointnet.step()
 
         with torch.no_grad():
-            first_batch = True
             for data in val_dataloader:
                 metrics, targets, preds, last_epoch = train_loop(data, optimizer, ce_loss, pointnet, writer_val, False,
-                                                                 epoch, last_epoch, first_batch)
-                first_batch = False
+                                                                 epoch, last_epoch)
                 preds = preds.view(-1)
                 targets = targets.view(-1)
                 metrics = get_accuracy(preds, targets, metrics, 'segmentation')
@@ -243,15 +233,10 @@ def train(
         writer_val.add_scalar('loss', np.mean(epoch_val_loss), epoch)
         writer_train.add_scalar('loss_NLL', np.mean(ce_train_loss), epoch)
         writer_val.add_scalar('loss_NLL', np.mean(epoch_val_loss), epoch)
-        # writer_train.add_scalar('mean_detected_positive', np.mean(targets_pos), epoch)
-        # writer_val.add_scalar('mean_detected_positive', np.mean(detected_positive), epoch)
-        # writer_train.add_scalar('mean_detected_negative', np.mean(targets_neg), epoch)
-        # writer_val.add_scalar('mean_detected_negative', np.mean(detected_negative), epoch)
         writer_train.add_scalar('accuracy', np.mean(epoch_train_acc), epoch)
         writer_val.add_scalar('accuracy', np.mean(epoch_val_acc), epoch)
         writer_val.add_scalar('epochs_since_improvement', epochs_since_improvement, epoch)
         writer_val.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch)
-        # if task == 'segmentation':
         writer_train.add_scalar('_iou_tower', np.mean(iou['powerlines_train']), epoch)
         writer_val.add_scalar('_iou_tower', np.mean(iou['powerlines_val']), epoch)
         writer_train.add_scalar('_iou_roof', np.mean(iou['roof_train']), epoch)
@@ -264,13 +249,6 @@ def train(
         writer_val.add_scalar('_iou_high_veg', np.mean(iou['high_veg_val']), epoch)
         writer_train.add_scalar('_iou_buildings', np.mean(iou['buildings_train']), epoch)
         writer_val.add_scalar('_iou_buildings', np.mean(iou['buildings_val']), epoch)
-        # writer_train.add_scalar('_iou_ground', np.mean(iou['ground_train']), epoch)
-        # writer_val.add_scalar('_iou_ground', np.mean(iou['ground_val']), epoch)
-        # writer_train.add_scalar('_iou_other_towers', np.mean(iou['other_towers_train']), epoch)
-        # writer_val.add_scalar('_iou_other_towers', np.mean(iou['other_towers_val']), epoch)
-        # elif task == 'classification':
-        #     writer_train.add_scalar('accuracy_weighted', np.mean(epoch_train_acc_w), epoch)
-        #     writer_val.add_scalar('accuracy_weighted', np.mean(epoch_val_acc_w), epoch)
 
         writer_train.flush()
         writer_val.flush()
@@ -292,13 +270,11 @@ def train(
         if epochs_since_improvement > 100:
             exit()
 
-    # plot_losses(train_loss, test_loss, save_to_file=os.path.join(output_folder, 'loss_plot.png'))
-    # plot_accuracies(train_acc, test_acc, save_to_file=os.path.join(output_folder, 'accuracy_plot.png'))
     print("--- TOTAL TIME: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
 
 
 def train_loop(data, optimizer, ce_loss, pointnet, w_tensorboard=None, train=True,
-               epoch=0, last_epoch=0, first_batch_val=False):
+               epoch=0, last_epoch=0):
     """
 
     :return:

@@ -27,34 +27,30 @@ global NUM_CLASSES, GLOBAL_FEAT_SIZE
 
 
 def train(
-        dataset_folder,
-        path_list_files,
-        output_folder,
-        n_points,
-        batch_size,
-        epochs,
-        learning_rate,
-        number_of_workers,
-        model_checkpoint,
-        c_sample):
+    dataset_folder,
+    path_list_files,
+    n_points,
+    batch_size,
+    epochs,
+    learning_rate,
+    number_of_workers,
+    model_checkpoint):
     start_time = time.time()
-    logging.info(f"Constrained sampling: {c_sample}")
 
     # Tensorboard location and plot names
     now = datetime.datetime.now()
     location = 'src/runs/tower_detec/bt/'
 
     # Datasets train / val / test
-    with open(os.path.join(path_list_files, 'val_cls_files.txt'), 'r') as f:
+    with open(os.path.join(path_list_files, 'train_labeled_cls_files.txt'), 'r') as f:
         train_files = f.read().splitlines()
 
     random.Random(4).shuffle(train_files)
     print('Length files: ', len(train_files))
-    # train_files = [file for file in train_files if 'tower_' in file]
     val_files = train_files[:round(len(train_files) * 0.1)]
     train_files = train_files[round(len(train_files) * 0.1):]
 
-    NAME = 'c' + str(NUM_CLASSES)+'DALES_' + path_list_files.split('_')[-1]
+    NAME = 'c' + str(NUM_CLASSES) + 'DALES_' + path_list_files.split('_')[-1]
 
     writer_train = SummaryWriter(location + 'seg_' + now.strftime("%m-%d-%H:%M") + '_train' + NAME)
     writer_val = SummaryWriter(location + 'seg_' + now.strftime("%m-%d-%H:%M") + '_val' + NAME)
@@ -108,14 +104,9 @@ def train(
         barlow_twins_model.load_state_dict(checkpoint['state_dict'])
         pointnet.base_pointnet = barlow_twins_model.encoder
         optimizer = optim.Adam(pointnet.parameters(), lr=learning_rate)
-        NAME=NAME+'_barlow_'+model_checkpoint.split('/')[-1].split('-')[0]
-
-        # checkpoint = torch.load(model_checkpoint)
-        # pointnet.load_state_dict(checkpoint['model'])
-        # optimizer.load_state_dict(checkpoint['optimizer'])
+        NAME = NAME + '_barlow_' + model_checkpoint.split('/')[-1].split('-')[0]
 
     # loss
-    # c_weights = torch.FloatTensor([1, 1, 1, 1, 1, 1]).to(device)
     ce_loss = torch.nn.CrossEntropyLoss(weight=None, reduction='mean', ignore_index=-1)
 
     scheduler_pointnet = torch.optim.lr_scheduler.MultiStepLR(optimizer,
@@ -156,9 +147,6 @@ def train(
         }
         last_epoch = -1
 
-        # if epochs_since_improvement == 10 or epoch == 15:
-        #     adjust_learning_rate(optimizer, 0.5)
-
         # --------------------------------------------- train loop ---------------------------------------------
         for data in train_dataloader:
             metrics, targets, preds, last_epoch = train_loop(data, optimizer, ce_loss, pointnet, writer_train, True,
@@ -183,16 +171,13 @@ def train(
         scheduler_pointnet.step()
 
         with torch.no_grad():
-            first_batch = True
             for data in val_dataloader:
                 metrics, targets, preds, last_epoch = train_loop(data, optimizer, ce_loss, pointnet, writer_val, False,
-                                                                 epoch, last_epoch, first_batch)
-                first_batch = False
+                                                                 epoch, last_epoch)
                 preds = preds.view(-1)
                 targets = targets.view(-1)
                 metrics = get_accuracy(preds, targets, metrics, 'segmentation')
 
-                # iou['bckg_val'].append(get_iou_obj(targets, preds, 0))
                 iou['buildings_val'].append(get_iou_obj(targets, preds, 0))
                 iou['powerlines_val'].append(get_iou_obj(targets, preds, 1))
                 iou['high_veg_val'].append(get_iou_obj(targets, preds, 2))
@@ -203,13 +188,6 @@ def train(
                 epoch_val_loss.append(metrics['loss'].cpu().item())  # in val ce_loss and total_loss are the same
                 epoch_val_acc.append(metrics['accuracy'])
                 epoch_val_acc_w.append(metrics['accuracy_w'])
-
-                # targets = targets.cpu().numpy()
-                # n_samples = len(targets)
-                # targets_pos.append((targets == np.ones(n_samples)).sum() / n_samples)
-                # targets_neg.append((targets == np.zeros(n_samples)).sum() / n_samples)
-                # detected_negative.append((np.array(preds) == np.zeros(n_samples)).sum() / n_samples)
-                # detected_positive.append((np.array(preds) == np.ones(n_samples)).sum() / n_samples)
 
         # ------------------------------------------------------------------------------------------------------
         # Tensorboard
@@ -224,12 +202,8 @@ def train(
         writer_val.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch)
         writer_train.add_scalar('_iou_tower', np.mean(iou['powerlines_train']), epoch)
         writer_val.add_scalar('_iou_tower', np.mean(iou['powerlines_val']), epoch)
-        # writer_train.add_scalar('_iou_background', np.mean(iou['bckg_train']), epoch)
-        # writer_val.add_scalar('_iou_background', np.mean(iou['bckg_val']), epoch)
         writer_train.add_scalar('_iou_low_veg', np.mean(iou['low_veg_train']), epoch)
         writer_val.add_scalar('_iou_low_veg', np.mean(iou['low_veg_val']), epoch)
-        # writer_train.add_scalar('_iou_med_veg', np.mean(iou['med_veg_train']), epoch)
-        # writer_val.add_scalar('_iou_med_veg', np.mean(iou['med_veg_val']), epoch)
         writer_train.add_scalar('_iou_high_veg', np.mean(iou['high_veg_train']), epoch)
         writer_val.add_scalar('_iou_high_veg', np.mean(iou['high_veg_val']), epoch)
         writer_train.add_scalar('_iou_buildings', np.mean(iou['buildings_train']), epoch)
@@ -243,28 +217,26 @@ def train(
         if np.mean(epoch_val_loss) < best_vloss or epoch > 140:
             # Save checkpoint
             name = now.strftime("%m-%d-%H:%M") + 'seg' + NAME
-            if epoch > 140:
-                name= name + 'ep' + str(epoch)
+            # if epoch > 140:
+            #     name = name + 'ep' + str(epoch)
 
             save_checkpoint(name, epoch, epochs_since_improvement, pointnet,
                             optimizer, metrics['accuracy'],
                             batch_size, learning_rate, n_points)
             epochs_since_improvement = 0
             best_vloss = np.mean(epoch_val_loss)
-            print('checkpoint saved epoch', epoch)
+            print('checkpoint saved epoch: ', epoch)
 
         else:
             epochs_since_improvement += 1
         if epochs_since_improvement > 100:
             exit()
 
-    # plot_losses(train_loss, test_loss, save_to_file=os.path.join(output_folder, 'loss_plot.png'))
-    # plot_accuracies(train_acc, test_acc, save_to_file=os.path.join(output_folder, 'accuracy_plot.png'))
     print("--- TOTAL TIME: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
 
 
 def train_loop(data, optimizer, ce_loss, pointnet, w_tensorboard=None, train=True,
-               epoch=0, last_epoch=0, first_batch_val=False):
+               epoch=0, last_epoch=0):
     """
 
     :return:
@@ -302,7 +274,6 @@ def train_loop(data, optimizer, ce_loss, pointnet, w_tensorboard=None, train=Tru
     #         # Tensorboard
     #         plot_pc_tensorboard(pc[0, mask, :], targets_plot, w_tensorboard, 'b0_plot_targets', step=epoch)
     #         plot_pc_tensorboard(pc[0, mask, :], preds_plot, w_tensorboard, 'b0_plot_predictions', step=epoch)
-    #
     #         last_epoch = epoch
 
     # compute regularization loss
@@ -326,14 +297,12 @@ if __name__ == '__main__':
                         default='/home/m.caros/work/dales_data/dales_40x40/train')
     parser.add_argument('--path_list_files', type=str,
                         default='train_test_files/dales_40x40_barlow_50')
-    parser.add_argument('--output_folder', type=str, help='output folder', default='results')
     parser.add_argument('--number_of_points', type=int, default=4096, help='number of points per cloud')
     parser.add_argument('--batch_size', type=int, default=16, help='batch size')
     parser.add_argument('--epochs', type=int, default=150, help='number of epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
     parser.add_argument('--number_of_workers', type=int, default=16, help='number of workers for the dataloader')
     parser.add_argument('--model_checkpoint', type=str, default='', help='models checkpoint path')
-    parser.add_argument('--c_sample', type=bool, default=False, help='use constrained sampling')
     parser.add_argument('--n_class', type=int, default=9, help='num classes to segment')
 
     args = parser.parse_args()
@@ -343,11 +312,9 @@ if __name__ == '__main__':
 
     train(args.dataset_folder,
           args.path_list_files,
-          args.output_folder,
           args.number_of_points,
           args.batch_size,
           args.epochs,
           args.learning_rate,
           args.number_of_workers,
-          args.model_checkpoint,
-          args.c_sample)
+          args.model_checkpoint)

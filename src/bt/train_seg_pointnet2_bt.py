@@ -5,9 +5,9 @@ from pathlib import Path
 import sys
 from tqdm import tqdm
 import time
-from src.datasets import BarlowTwinsDataset_no_ground
+from src.datasets import BarlowTwinsDataset
 from torch.optim.lr_scheduler import MultiStepLR
-from src.utils.utils import *
+from utils.utils import *
 from src.models.pointnet2_sem_seg import PointNet2, get_loss
 from src.models.barlow_twins_PN2 import *
 
@@ -97,24 +97,24 @@ def main(args):
     path_list_files = args.path_list_files
 
     '''DATA LOADING'''
-    with open(os.path.join(path_list_files, 'val_cls_files.txt'), 'r') as f:
+    with open(os.path.join(path_list_files, 'train_labeled_cls_files.txt'), 'r') as f:
         train_files = f.read().splitlines()
 
     val_files = train_files[:round(len(train_files) * 0.1)]
     train_files = train_files[round(len(train_files) * 0.1):]
 
     print("start loading training data ...")
-    train_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                                 task='segmentation',
-                                                 number_of_points=NUM_POINT,
-                                                 files=train_files,
-                                                 fixed_num_points=True)
+    train_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                       task='segmentation',
+                                       number_of_points=NUM_POINT,
+                                       files=train_files,
+                                       fixed_num_points=True)
     print("start loading test data ...")
-    test_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                                task='segmentation',
-                                                number_of_points=NUM_POINT,
-                                                files=val_files,
-                                                fixed_num_points=True)
+    test_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                      task='segmentation',
+                                      number_of_points=NUM_POINT,
+                                      files=val_files,
+                                      fixed_num_points=True)
 
     trainDataLoader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=10,
                                                   pin_memory=True, drop_last=True,

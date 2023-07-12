@@ -462,7 +462,6 @@ def save_checkpoint(name, epoch, epochs_since_improvement, model, optimizer, acc
         'weights': weights
     }
     filename = name + '.pth'
-
     torch.save(state, 'src/checkpoints/' + filename)
 
 

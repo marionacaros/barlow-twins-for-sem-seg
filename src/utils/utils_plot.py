@@ -13,7 +13,7 @@ def plot_losses(train_loss, test_loss, save_to_file=None):
     plt.title('Training and test loss')
     plt.legend()
     if save_to_file:
-        fig.savefig('figures/Loss.png', dpi=200)
+        fig.savefig('figures_notebooks/Loss.png', dpi=200)
 
 
 def plot_accuracies(train_acc, test_acc, save_to_file=None):
@@ -36,14 +36,14 @@ def plot_3d(points, name, d_color=3):
                     cmap="viridis_r",
                     alpha=0.5)
     plt.colorbar(sc, shrink=0.5, pad=0.05)
-    directory = 'figures/results_infer'
+    directory = 'figures_notebooks/results_infer'
     plt.title(name + ' classes: ' + str(set(points[:, 3].astype('int'))))
     plt.show()
     plt.savefig(os.path.join(directory, name + '.png'), bbox_inches='tight', dpi=100)
     plt.close()
 
 
-def plot_3d_legend(points, name, d_color, d_label, n_points=2000, point_size=2, directory='figures',
+def plot_3d_legend(points, name, d_color, d_label, n_points=2000, point_size=2, directory='figures_notebooks',
                    set_figsize=[10, 10]):
     """
     3D plot with legend
@@ -102,7 +102,7 @@ def plot_3d_legend(points, name, d_color, d_label, n_points=2000, point_size=2, 
 
     if directory:
         plt.gcf()
-        plt.savefig(os.path.join(directory, name + '.png'), bbox_inches='tight', dpi=100)
+        plt.savefig(os.path.join(directory, name + '.png'), bbox_inches='tight', dpi=150)
     plt.close()
 
 
@@ -128,7 +128,7 @@ def plot_3d_subplots(points_tNet, fileName, points_i):
                      cmap="winter", alpha=0.5)
     ax.title.set_text('Output of tNet')
     plt.show()
-    directory = 'figures/plots_train/'
+    directory = 'figures_notebooks/plots_train/'
     name = 'tNetOut_' + str(fileName) + '.png'
     plt.savefig(os.path.join(directory, name), bbox_inches='tight', dpi=150)
     plt.close()
@@ -148,7 +148,7 @@ def plot_hist2D(points, name='hist'):
     fig, ax = plt.subplots(tight_layout=True)
     hist = ax.hist2d(points[0, :], points[1, :], bins=n_bins)
     fig.colorbar(hist[3], ax=ax)
-    directory = 'figures'
+    directory = 'figures_notebooks'
     plt.savefig(os.path.join(directory, name+'.png'), bbox_inches='tight', dpi=100)
     plt.close()
 
@@ -157,7 +157,7 @@ def plot_hist(points, name):
     n_bins = 50
     # fig = plt.figure(tight_layout=True, figsize=[10,10])
     plt.hist(points, bins=n_bins)
-    directory = 'figures'
+    directory = 'figures_notebooks'
     plt.savefig(os.path.join(directory, name+'.png'), bbox_inches='tight', dpi=100)
     plt.close()
 
@@ -239,29 +239,38 @@ def plot_pointcloud_with_labels(pc, labels, targets=None, ious=None, name='', pa
 
 def plot_pointcloud_with_labels_barlow(pc, labels, targets, miou, name, path_plot='', point_size=1):
     """# Segmentation labels:
-    # 0 -> background (other classes we're not interested)
-    # 1 -> building
-    # 2 -> power lines
+    # 0 -> building
+    # 1 -> tower
+    # 2 -> lines
     # 3 -> low vegetation
     # 4 -> high vegetation
-    # 5 -> ground when given"""
+    # 5 -> roof
+    """
 
     labels = labels.astype(int)
-    fig = plt.figure(figsize=[14, 6])
+    fig = plt.figure(figsize=[16, 8])
 
     # colormap
     viridisBig = plt.cm.get_cmap('viridis', 10)
     newcolors = viridisBig(np.linspace(0, 0.8, 6))
-    orange = np.array([256 / 256, 128 / 256, 0 / 256, 1])  # orange
+    orange = np.array([256 / 256, 165 / 256, 0 / 256, 1])  # orange
     blue = np.array([0 / 256, 0 / 256, 1, 1])
-    purple = np.array([127 / 256, 0 / 256, 250 / 256, 1])
-    gray = np.array([60 / 256, 60 / 256, 60 / 256, 1])  # gray
-    newcolors[:1, :] = purple
+    purple = np.array([103 / 256, 0 / 256, 250 / 256, 1])
+    green = np.array([34 / 256, 150 / 256, 34 / 256, 0.6])  # green
+    light_green = np.array([141 / 256, 220 / 256, 100 / 256, 0.7])  # light green
+    dark_green = np.array([2 / 256, 128 / 256, 90 / 256, 0.7])
+    red = np.array([256 / 256, 0 / 256, 50 / 256, 1])
+    pink = np.array([256 / 256, 60 / 256, 200 / 256, 1])  # PINK
+    light_blue = np.array([0 / 256, 243 / 256, 256 / 256, 1])
+    black = np.array([0 / 256, 0 / 256, 0 / 256, 1])
+    brown = np.array([250 / 256, 190 / 256, 141 / 256, 0.6])
+
+    newcolors[:1, :] = light_blue
     newcolors[1:2, :] = blue
-    newcolors[2:3, :] = np.array([151 / 256, 188 / 256, 65 / 256, 0.6])  # green
-    newcolors[3:4, :] = np.array([151 / 256, 250 / 256, 90 / 256, 0.6])  # light green
-    newcolors[4:5, :] = orange
-    # newcolors[5:, :] = gray
+    newcolors[2:3, :] = purple
+    newcolors[3:4, :] = dark_green
+    newcolors[4:5, :] = light_green
+    newcolors[5:6, :] = red
     cmap = ListedColormap(newcolors)
 
     # =============
@@ -289,15 +298,100 @@ def plot_pointcloud_with_labels_barlow(pc, labels, targets, miou, name, path_plo
     # Legend
     # ==============
     legend_elements = [
-        Line2D([0], [0], marker='o', color='w', label='Buildings', markerfacecolor=purple, markersize=10),
-        Line2D([0], [0], marker='o', color='w', label='Power lines', markerfacecolor=blue, markersize=10),
-        Line2D([0], [0], marker='o', color='w', label='High veg',
-               markerfacecolor=np.array([200 / 256, 250 / 256, 90 / 256, 1]), markersize=10),
-        Line2D([0], [0], marker='o', color='w', label='Low veg',
-               markerfacecolor=np.array([151 / 256, 188 / 256, 65 / 256, 1]), markersize=10),
-        Line2D([0], [0], marker='o', color='w', label='Ground', markerfacecolor=orange, markersize=10),
-        # Line2D([0], [0], marker='o', color='w', label='Other tower', markerfacecolor=gray, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Building', markerfacecolor=light_blue, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Pylon', markerfacecolor=blue, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Lines', markerfacecolor=purple, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Low veg', markerfacecolor=dark_green, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='High veg', markerfacecolor=light_green, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='Roof', markerfacecolor=red, markersize=10),
+    ]
 
+    ax.legend(handles=legend_elements, loc='center right', bbox_to_anchor=(1.35, 0.5))  # , bbox_to_anchor=(1.04, 0.5)
+    fig.set_dpi(200)
+    fig.tight_layout(pad=0.4)
+    fig.subplots_adjust(right=0.85)
+    plt.gcf()
+    if path_plot:
+        if not os.path.exists(path_plot):
+            os.makedirs(path_plot)
+        plt.savefig(os.path.join(path_plot, name) + '.png')  # str(len(labels[labels==1])) +
+
+    fig.clear()
+    plt.close(fig)
+
+
+def plot_pointcloud_with_labels_DALES(pc, labels, targets, miou, name, path_plot='', point_size=1,n_classes=9):
+    """# Segmentation labels:
+    # 0 -> building
+    # 1 -> tower
+    # 2 -> lines
+    # 3 -> low vegetation
+    # 4 -> high vegetation
+    # 5 -> roof
+    """
+
+    labels = labels.astype(int)
+    fig = plt.figure(figsize=[14, 6])
+
+    # colormap
+    viridisBig = plt.cm.get_cmap('viridis', 10)
+    newcolors = viridisBig(np.linspace(0, 1, n_classes))
+    orange = np.array([256 / 256, 128 / 256, 0 / 256, 0.7])  # orange
+    blue = np.array([0 / 256, 0 / 256, 1, 0.7])
+    purple = np.array([127 / 256, 0 / 256, 250 / 256, 1])
+    green = np.array([34 / 256, 150 / 256, 34 / 256, 0.9])  # green
+    light_green = np.array([200 / 256, 250 / 256, 90 / 256, 0.5])  # light green
+    red = np.array([200 / 256, 0 / 256, 0 / 256, 1])
+    pink = np.array([256 / 256, 60 / 256, 200 / 256, 0.8])  # PINK
+    light_blue = np.array([0 / 256, 100 / 256, 200 / 256, 0.8])
+    black = np.array([0 / 256, 0 / 256, 0 / 256, 1])
+
+    newcolors[:1, :] = light_green
+    newcolors[1:2, :] = light_green
+    newcolors[2:3, :] = green
+    newcolors[3:4, :] = orange
+    newcolors[4:5, :] = red
+    newcolors[5:6, :] = blue
+    newcolors[6:7, :] = pink
+    newcolors[7:8, :] = black
+    newcolors[8:9, :] = purple
+
+    cmap = ListedColormap(newcolors)
+
+    # =============
+    # First subplot
+    # =============
+    ax = fig.add_subplot(1, 2, 1, projection='3d', xlim=(-1, 1), ylim=(-1, 1), zlim=(min(pc[:, 2]), max(pc[:, 2])))
+    sc = ax.scatter(pc[:, 0], pc[:, 1], pc[:, 2], c=labels, s=point_size, marker='o', cmap=cmap, vmin=0, vmax=5)
+    # plt.colorbar(sc, fraction=0.03, pad=0.1)
+    plt.title('Predictions')
+
+    # ==============
+    # Second subplot
+    # ==============
+    ax = fig.add_subplot(1, 2, 2, projection='3d', xlim=(-1, 1), ylim=(-1, 1), zlim=(min(pc[:, 2]), max(pc[:, 2])))
+    sc2 = ax.scatter(pc[:, 0], pc[:, 1], pc[:, 2], c=targets, s=point_size, marker='o', cmap=cmap, vmin=0, vmax=5)
+    # plt.colorbar(sc2, fraction=0.03, pad=0.1)
+    plt.title('Ground truth')
+
+    # Title
+    xstr = lambda x: "None" if x is None else str(round(x, 2))
+    plt.suptitle("Preds vs. Ground Truth #pts=" + str(len(pc)) +
+                 'mIoU=' + xstr(miou) + ']\n',
+                 fontsize=16)
+
+    # Legend
+    # ==============
+    legend_elements = [
+        #         Line2D([0], [0], marker='o', color='w', label='0', markerfacecolor=blue, markersize=10),
+        #         Line2D([0], [0], marker='o', color='w', label='1', markerfacecolor=light_green, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='veg', markerfacecolor=green, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='cars', markerfacecolor=orange, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='trucks', markerfacecolor=red, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='lines', markerfacecolor=blue, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='fences', markerfacecolor=pink, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='poles', markerfacecolor=black, markersize=10),
+        Line2D([0], [0], marker='o', color='w', label='buildings', markerfacecolor=purple, markersize=10),
     ]
 
     ax.legend(handles=legend_elements, loc='center right', bbox_to_anchor=(1.35, 0.5))  # , bbox_to_anchor=(1.04, 0.5)
@@ -398,7 +492,7 @@ def plot_3d_sequence_tensorboard(pc, writer_tensorboard, filename, i_w, title, n
 
     ax.legend(handles=legend_elements, loc='center right', bbox_to_anchor=(1.45, 0.5))  # , bbox_to_anchor=(1.04, 0.5)
 
-    directory = '/home/m.caros/work/objectDetection/figures/kmeans_seq/'
+    directory = '/home/m.caros/work/3DSemanticSegmentation/figures_notebooks/kmeans_seq/'
     name = filename + '_' + str(i_w) + '.png'
     plt.savefig(directory + name, bbox_inches='tight', dpi=100)
 
@@ -417,7 +511,7 @@ def plot_3d_dales_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_cl
     tag = str(n_clusters) + 'c-means_3Dxy' + filename.split('/')[-1]
     plt.title(title)
 
-    directory = '/home/m.caros/work/objectDetection/figures/kmeans_seq/'
+    directory = '/home/m.caros/work/3DSemanticSegmentation/figures_notebooks/kmeans_seq/'
     name = filename + '_' + str(i_w) + '.png'
     plt.savefig(directory + name, bbox_inches='tight', dpi=100)
 
@@ -425,7 +519,7 @@ def plot_3d_dales_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_cl
     plt.close()
 
 
-def plot_class_points(inFile, fileName, selClass, save_plot=False, point_size=40, save_dir='figures/'):
+def plot_class_points(inFile, fileName, selClass, save_plot=False, point_size=40, save_dir='figures_notebooks/'):
     """Plot point cloud of a specific class"""
 
     # get class
@@ -445,7 +539,7 @@ def plot_class_points(inFile, fileName, selClass, save_plot=False, point_size=40
     plt.show()
 
 
-def plot_2d_class_points(inFile, fileName, selClass, save_plot=False, point_size=40, save_dir='figures/'):
+def plot_2d_class_points(inFile, fileName, selClass, save_plot=False, point_size=40, save_dir='figures_notebooks/'):
     """Plot point cloud of a specific class"""
 
     # get class
@@ -464,8 +558,8 @@ def plot_2d_class_points(inFile, fileName, selClass, save_plot=False, point_size
     plt.show()
 
 
-def plot_3d_coords(coords, fileName='', selClass=[], save_plot=False, point_size=2, save_dir='figures/',
-                   c_map="Spectral",feat_color=None,
+def plot_3d_coords(coords, fileName='', selClass=[], save_plot=False, point_size=2, save_dir='figures_notebooks/',
+                   c_map="Spectral", feat_color=None,
                    show=True, figsize=[6, 6]):
     """Plot of point cloud. Can be filtered by a specific class"""
     # colormap
@@ -486,7 +580,7 @@ def plot_3d_coords(coords, fileName='', selClass=[], save_plot=False, point_size
     fig = plt.figure(figsize=figsize)
     ax = plt.axes(projection='3d')
     # sc = ax.scatter(coords[0], coords[1], coords[2], c=feat_color, s=point_size, marker='o', cmap=cmap,vmin=0, vmax=3)
-    sc = ax.scatter(coords[0], coords[1], coords[2], c=feat_color, s=point_size, marker='o', cmap='viridis')
+    sc = ax.scatter(coords[0], coords[1], coords[2], c=feat_color, s=point_size, marker='o', cmap=c_map)
     plt.colorbar(sc, shrink=0.5, pad=0.05)
     # ax.legend(*sc.legend_elements(), loc="best", title="Classes")
 
@@ -504,7 +598,7 @@ def plot_3d_coords(coords, fileName='', selClass=[], save_plot=False, point_size
         plt.close()
 
 
-def plot_2d_coords(coords, ax=[], save_plot=False, point_size=40, figsize=[10, 5], save_dir='figures/'):
+def plot_2d_coords(coords, ax=[], save_plot=False, point_size=40, figsize=[10, 5], save_dir='figures_notebooks/'):
     if not ax:
         fig = plt.figure(figsize=figsize)
         sc = plt.scatter(coords[0], coords[2], c=coords[1], s=point_size, marker='o', cmap="viridis")

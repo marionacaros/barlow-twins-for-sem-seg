@@ -3,7 +3,7 @@ import os.path
 import time
 import torch.nn.functional as F
 from torch.utils.data import random_split
-from src.datasets import BarlowTwinsDataset_no_ground
+from src.datasets import BarlowTwinsDataset
 import logging
 from src.models.pointnet import SegmentationPointNet
 from src.utils.utils import *
@@ -45,11 +45,11 @@ def test(dataset_folder,
         test_files = f.read().splitlines()
 
     # Initialize dataset
-    test_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                                task='segmentation',
-                                                number_of_points=None,
-                                                files=test_files,
-                                                fixed_num_points=False)
+    test_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                      task='segmentation',
+                                      number_of_points=None,
+                                      files=test_files,
+                                      fixed_num_points=False)
 
     logging.info(f'Total samples: {len(test_dataset)}')
     logging.info(f'Task: {test_dataset.task}')
@@ -173,12 +173,12 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_folder', type=str, help='path to the dataset folder',
                         default='/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3')
     parser.add_argument('--output_folder', type=str,
-                        default='/home/m.caros/work/objectDetection/src/results',
+                        default='src/results',
                         help='output folder')
     parser.add_argument('--number_of_workers', type=int, default=0, help='number of workers for the dataloader')
     parser.add_argument('--model_checkpoint', type=str, default='', help='models checkpoint path')
     parser.add_argument('--path_list_files', type=str,
-                        default='train_test_files/RGBN_40x40_barlow_p1/no_ground/')
+                        default='train_test_files/RGBN_40x40_barlow_10/')
     parser.add_argument('--device', type=str,
                         default='cuda')
     args = parser.parse_args()

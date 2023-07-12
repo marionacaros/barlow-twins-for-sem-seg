@@ -44,11 +44,11 @@ def test(dataset_folder,
         test_files = f.read().splitlines()
 
     # Initialize dataset
-    test_dataset = BarlowTwinsDataset_no_ground(dataset_folder=dataset_folder,
-                                                task='segmentation',
-                                                number_of_points=None,
-                                                files=test_files,
-                                                fixed_num_points=False)
+    test_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
+                                      task='segmentation',
+                                      number_of_points=None,
+                                      files=test_files,
+                                      fixed_num_points=False)
 
     logging.info(f'Total samples: {len(test_dataset)}')
     logging.info(f'Task: {test_dataset.task}')
@@ -88,10 +88,9 @@ def test(dataset_folder,
         os.makedirs(os.path.join(output_folder, 'figures'))
 
     for data in progressbar(test_dataloader):
-        pc, targets, file_name = data  # [1, 2000, 12], [1, 2000]
+        pc, targets, file_name = data  # [1, n_points, 9], [1, n_points]
         pc = pc.transpose(2, 1)
-
-        # file_name = file_name[0].split('/')[-1].split('.')[0]
+        file_name = file_name[0].split('/')[-1].split('.')[0]
 
         model = model.eval()
         seg_pred, feature_transform = model(pc.to(device))  # [batch, n_points, 2] [2, batch, 128]
@@ -141,20 +140,22 @@ def test(dataset_folder,
         else:
             iou_roof = None
 
-        # mIoU = np.nanmean([np.array([iou_tower,iou_low_veg, iou_high_veg, iou_building],
-        #                             dtype=np.float64)])
-        # # pc, labels, targets, ious, name, path_plot = '', point_size = 1)
-        # if 0 in set(targets) or 2 in set(targets):
-        #     plot_pointcloud_with_labels_barlow(pc.squeeze(0).numpy(),
-        #                                        preds,
-        #                                        targets,
-        #                                        mIoU,
-        #                                        file_name + 'no_ground' + '_preds',
-        #                                        path_plot=os.path.join(output_folder, 'figures'),
-        #                                        point_size=4)
+        mIoU = np.nanmean([np.array([iou_tower, iou_low_veg, iou_high_veg, iou_building, iou_roof,iou_lines],
+                                    dtype=np.float64)])
+        # pc, labels, targets, ious, name, path_plot = '', point_size = 1
+        pc = pc.transpose(2, 1)
+        if pc.shape[1] > 2000:
+            if 0 in set(targets) or 1 in set(targets) or 2 in set(targets):
+                plot_pointcloud_with_labels_barlow(pc.squeeze(0).numpy(),
+                                                   preds,
+                                                   targets,
+                                                   mIoU,
+                                                   str(round(mIoU, 2)) + file_name + '_preds',
+                                                   path_plot=os.path.join(output_folder, 'figures'),
+                                                   point_size=3)
 
-        # # # store segmentation results in pickle file for plotting
-        # points = points.reshape(-1, 11)
+        # # store segmentation results in pickle file for plotting
+        # points = points.reshape(-1, 9)
         # print(points.shape)
         # preds = preds[..., np.newaxis]
         # print(preds.shape)
@@ -163,6 +164,7 @@ def test(dataset_folder,
         # dir_results = 'segmentation_regular'
         # with open(os.path.join(output_folder, dir_results, file_name), 'wb') as f:
         #     pickle.dump(points, f)
+
     iou_arr = [np.mean(iou['tower']), np.mean(iou['low_veg']),
                np.mean(iou['high_veg']), np.mean(iou['building']),
                np.mean(iou['roof']), np.mean(iou['lines'])]
@@ -201,12 +203,14 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_folder', type=str, help='path to the dataset folder',
                         default='/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3')
     parser.add_argument('--output_folder', type=str,
-                        default='/home/m.caros/work/objectDetection/src/results',
-                        help='output folder')
+                        default='src/results/bt', help='output folder')
     parser.add_argument('--number_of_workers', type=int, default=16, help='number of workers for the dataloader')
-    parser.add_argument('--model_checkpoint', type=str, default='', help='models checkpoint path')
+    parser.add_argument('--model_checkpoint', type=str,
+                        # default='src/checkpoints/BT/PN2_BTpretrained/PN2_barlow_epoch=298best_model.pth',
+                        default = 'src/checkpoints/BT/PN2_no_pretraining/2023-04-04_12-57PN2/checkpoints/best_model.pth',
+                        help='model checkpoint path')
     parser.add_argument('--path_list_files', type=str,
-                        default='train_test_files/RGBN_40x40_barlow_p1/no_ground/')
+                        default='train_test_files/RGBN_40x40_barlow_10/')
     parser.add_argument('--device', type=str,
                         default='cuda')
     args = parser.parse_args()
