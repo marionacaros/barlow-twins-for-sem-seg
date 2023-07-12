@@ -231,10 +231,122 @@ class LidarDataset(data.Dataset):
         return labels
 
 
+############ --------------------------------------- INFERENCE ---------------------------------------#################
+
+class LidarInferenceDataset(data.Dataset):
+    NUM_CLASSIFICATION_CLASSES = 2
+    POINT_DIMENSION = 2
+
+    def __init__(self, dataset_folder,
+                 number_of_points=None,
+                 task='classification',
+                 files=None,
+                 fixed_num_points=True,
+                 c_sample=False):
+
+        self.dataset_folder = dataset_folder
+        self.task = task
+        self.files = [f.split('/')[-1] for f in files]
+        self.paths_files = files
+        self.n_points = number_of_points
+        self.fixed_num_points = fixed_num_points
+        self.constrained_sampling = c_sample
+        # self.paths_files = [os.path.join(self.dataset_folder, f) for f in self.files]
+        self.paths_files = files
+
+    def __len__(self):
+        return len(self.paths_files)
+
+    def __getitem__(self, index):
+        """
+        :param index: index of the file
+        :return: pc: [n_points, 8], labels:[n_points], file_path:[1]
+
+        dims:   0 - x
+                1 - y
+                2 - z
+                3 - I
+                4 - NDVI
+                5 - raw x
+                6 - raw y
+                7 - raw z
+        """
+        labels = []
+        file_path = self.paths_files[index]
+        pc = self.prepare_data(file_path,
+                               self.n_points,
+                               fixed_num_points=self.fixed_num_points,
+                               constrained_sample=self.constrained_sampling)
+
+        pc = np.concatenate((pc[:, :3], pc[:, 4:6], pc[:, 8:]), axis=1)  # pc size [2048,8]
+        return pc, labels, file_path
+
+    def prepare_data(self,
+                     point_file,
+                     number_of_points=None,
+                     fixed_num_points=True,
+                     constrained_sample=False):
+        """
+        dimensions of point cloud :
+        0 - x
+        1 - y
+        2 - z
+        3 - label
+        4 - I
+        5 - NDVI
+        6 - HAG
+        7 - constrained sampling flag
+        Added dimensions:
+        8 - raw x
+        9 - raw y
+        10 - raw z
+
+        :param point_file: path of torch file
+        :param number_of_points: i.e. 2048
+        :param fixed_num_points: if True sample to number_of_points
+        :param constrained_sample: if True use constrained_sampling flag
+        :return: torch tensor [points, dims]
+        """
+
+        with open(point_file, 'rb') as f:
+            pc = torch.load(f).numpy()
+        if self.task == 'classification':
+            pc = pc.astype(float)
+
+        # duplicate coordinates
+        pc = np.concatenate((pc, pc[:, :3]), axis=1)
+        # if constrained sampling -> get points labeled for sampling
+        if constrained_sample:
+            pc = pc[pc[:, 7] == 1]  # should be flag of position 7
+        else:
+            # remove buildings ?
+            pc = pc[pc[:, 3] != 6]
+
+        # random sample points if fixed_num_points
+        if fixed_num_points and pc.shape[0] > number_of_points:
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            pc = pc[sampling_indices, :]
+
+        # duplicate points if needed
+        elif fixed_num_points and pc.shape[0] < number_of_points:
+            points_needed = number_of_points - pc.shape[0]
+            rdm_list = np.random.randint(0, pc.shape[0], points_needed)
+            extra_points = pc[rdm_list, :]
+            pc = np.concatenate([pc, extra_points], axis=0)
+
+        # normalize axes between -1 and 1
+        pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
+        pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
+        pc[:, 2] = pc[:, 6] * 2  # HAG
+
+        # pc = torch.from_numpy(pc)
+        return pc
+
+
 # ############################################ Barlow Twins Dataset #################################################
 
 
-class BarlowTwinsDataset(data.Dataset):
+class BarlowTwinsDatasetWithGround(data.Dataset):
     NUM_CLASSIFICATION_CLASSES = 2
     POINT_DIMENSION = 3
 
@@ -273,8 +385,8 @@ class BarlowTwinsDataset(data.Dataset):
         # pc size [2048,14]
         if self.task == 'segmentation':
             labels = self.get_labels_segmnetation(pc)
-        elif self.task == 'classification':
-            labels = self.get_labels_classification(pc, self.classes_mapping[self.files[index]])
+        else:  # elif self.task == 'classification':
+            labels = self.get_labels_classification(self.classes_mapping[self.files[index]])
         pc = np.concatenate((pc[:, :3], pc[:, 4:10]), axis=1)
         return pc, labels, filename
 
@@ -287,7 +399,7 @@ class BarlowTwinsDataset(data.Dataset):
 
         with open(point_file, 'rb') as f:
             pc = torch.load(f).numpy()  # [points, dims]
-            # pc = pickle.load(f).astype(np.float32)  # [17434, 14]
+
         # remove not classified points
         # pc = pc[pc[:, 3] != 1]
         # remove ground
@@ -315,7 +427,7 @@ class BarlowTwinsDataset(data.Dataset):
         # normalize axes between -1 and 1
         pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
         pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
-        # height not normalized
+        # normalize height
         # pc[:, 2] = pc[:, 10] / 2  # HAG
         # pc[:, 2] = np.clip(pc[:, 2], 0.0, 1.0)
 
@@ -328,7 +440,7 @@ class BarlowTwinsDataset(data.Dataset):
         Get labels for segmentation
 
         Segmentation labels:
-        0 -> Infrastructure
+        0 -> Other infrastructure
         1 -> power lines
         2 -> med-high veg
         3 -> low vegetation
@@ -338,12 +450,6 @@ class BarlowTwinsDataset(data.Dataset):
         :return labels: points with categories to segment or classify
         """
         segment_labels = pointcloud[:, 3]
-
-        # segment_labels[segment_labels == 16] = 100  # walls
-        # segment_labels[segment_labels == 17] = 100  # other buildings
-        # segment_labels[segment_labels == 6] = 100  # buildings
-        # segment_labels[segment_labels == 19] = 100  # walls
-        # segment_labels[segment_labels == 22] = 100  # sticks
 
         segment_labels[segment_labels == 15] = 100  # tower
         segment_labels[segment_labels == 14] = 100  # lines
@@ -366,7 +472,7 @@ class BarlowTwinsDataset(data.Dataset):
         return labels
 
     @staticmethod
-    def get_labels_classification(pointcloud, point_cloud_class):
+    def get_labels_classification(point_cloud_class):
         """
         Classification labels:
         0 -> No tower (negative)
@@ -380,8 +486,10 @@ class BarlowTwinsDataset(data.Dataset):
         return labels
 
 
-class BarlowTwinsDataset_no_ground(data.Dataset):
+class BarlowTwinsDataset(data.Dataset):
     NUM_CLASSIFICATION_CLASSES = 2
+    # 0 -> no tower
+    # 1 -> tower
     POINT_DIMENSION = 3
 
     def __init__(self, dataset_folder,
@@ -392,8 +500,7 @@ class BarlowTwinsDataset_no_ground(data.Dataset):
                  c_sample=False,
                  use_ground=False,
                  no_labels=False):
-        # 0 -> no tower
-        # 1 -> tower
+
         self.dataset_folder = dataset_folder
         self.task = task
         self.use_ground = use_ground
@@ -422,9 +529,9 @@ class BarlowTwinsDataset_no_ground(data.Dataset):
         # pc size [2048,14]
         if self.task == 'segmentation':
             labels = self.get_labels_segmen(pc)
-        elif self.task == 'classification':
-            labels = self.get_labels_classification(self, pc)
-        pc = np.concatenate((pc[:, :3], pc[:, 4:10]), axis=1)
+        else:  # if self.task == 'classification':
+            labels = self.get_labels_classification(pc)
+        pc = np.concatenate((pc[:, :3], pc[:, 4:10]), axis=1)  # pc size [2048,9]
 
         return pc, labels, filename
 
@@ -440,7 +547,7 @@ class BarlowTwinsDataset_no_ground(data.Dataset):
             # pc = pickle.load(f).astype(np.float32)  # [17434, 14]
 
         # remove not classified points
-        # pc = pc[pc[:, 3] != 1]
+        pc = pc[pc[:, 3] != 1]
 
         # remove ground
         if not ground:
@@ -467,7 +574,7 @@ class BarlowTwinsDataset_no_ground(data.Dataset):
         # normalize axes between -1 and 1
         pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
         pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
-        # todo Z normalization up to 50 m
+        # Z normalization up to 50 m
         pc[:, 2] = pc[:, 10] / 2  # HAG
         pc[:, 2] = np.clip(pc[:, 2], 0.0, 1.0)
 
@@ -480,10 +587,12 @@ class BarlowTwinsDataset_no_ground(data.Dataset):
         Get labels for segmentation
 
         Segmentation labels:
-        0 -> Infrastructure
-        1 -> power lines
-        2 -> med-high veg
-        3 -> low vegetation
+        0 -> all infrastructure
+        1 -> pylon
+        2 -> power lines
+        3 -> low veg
+        4 -> med-high vegetation
+        5 -> roofs and objects over roofs
 
         :param pointcloud: [n_points, dim]
         :return labels: points with categories to segment or classify
@@ -509,43 +618,41 @@ class BarlowTwinsDataset_no_ground(data.Dataset):
         return labels
 
     @staticmethod
-    def get_labels_classification(self, pointcloud):
+    def get_labels_classification(pointcloud):
         """
         Classification labels:
-        0 -> Power lines and other towers
-        1 -> Infrastructure
-        2 -> High vegetation
-        3 -> other (low vegetation)
+        0 -> Only vegetation in point cloud
+        1 -> Power lines and other towers
+        2 -> Buildings and Infrastructure
 
-        :param point_cloud_class:
+        :param pointcloud:
         :return:
         """
-        if not self.no_labels:
-            unique, counts = np.unique(pointcloud[:, 3].cpu().numpy().astype(int), return_counts=True)
-            dic_counts = dict(zip(unique, counts))
+        # if not self.no_labels:
+        unique, counts = np.unique(pointcloud[:, 3].cpu().numpy().astype(int), return_counts=True)
+        dic_counts = dict(zip(unique, counts))
 
-            if 15 in dic_counts.keys():
-                labels = 0
-            elif 14 in dic_counts.keys():
-                labels = 0
-            elif 18 in dic_counts.keys():
-                labels = 0
-            elif 6 in dic_counts.keys():
-                labels = 1
-            elif 16 in dic_counts.keys():
-                labels = 1
-            elif 17 in dic_counts.keys():
-                labels = 1
-            elif 19 in dic_counts.keys():
-                labels = 1
-            elif 22 in dic_counts.keys():
-                labels = 1
-            elif 5 in dic_counts.keys():
-                labels = 2
-            else:
-                labels = 2
+        # power lines and other towers
+        if 15 in dic_counts.keys():
+            labels = 1
+        elif 14 in dic_counts.keys():
+            labels = 1
+        elif 18 in dic_counts.keys():
+            labels = 1
+        # buildings and infrastructures
+        elif 6 in dic_counts.keys():
+            labels = 2
+        elif 16 in dic_counts.keys():
+            labels = 2
+        elif 17 in dic_counts.keys():
+            labels = 2
+        elif 19 in dic_counts.keys():
+            labels = 2
+        elif 22 in dic_counts.keys():
+            labels = 2
+        # vegetation
         else:
-            labels = 3
+            labels = 0
 
         return labels
 
@@ -704,3 +811,481 @@ class DalesDataset(data.Dataset):
         seg_labels[seg_labels == 8] = 6  # buildings
 
         return seg_labels.type(torch.LongTensor)  # [2048, 8]
+
+##################################### Dataset clusters classification ###############################################
+
+
+class LidarDatasetClusters4cls(data.Dataset):
+    NUM_CLASSIFICATION_CLASSES = 2
+    POINT_DIMENSION = 2
+
+    def __init__(self, dataset_folder,
+                 task='classification',
+                 number_of_points=None,
+                 files=None,
+                 fixed_num_points=True):
+        # 0 -> no tower
+        # 1 -> tower
+        self.dataset_folder = dataset_folder
+        self.task = task
+        self.n_points = number_of_points
+        self.files = files
+        self.fixed_num_points = fixed_num_points
+        self.paths_files = [os.path.join(self.dataset_folder, f.split(':')[0]) for f in self.files]
+        self.c_i = {}
+        self._init_mapping()
+
+    def __len__(self):
+        return len(self.paths_files)
+
+    def _init_mapping(self):
+
+        self.len_landscape = 0
+        self.len_towers = 0
+
+        for file in self.files:
+            category = file.split(':')[-1]
+            file = file.split(':')[0]
+            if 'clusterOthers' in category:
+                self.len_landscape += 1
+            elif 'clusterPowerline' in category:
+                self.len_towers += 1
+            self.c_i[file] = 0
+
+    def __getitem__(self, index):
+        """
+        If task is classification, it returns a raw point cloud (pc), labels and filename
+        If task is segmentation, it returns a raw point cloud (pc), clustered point cloud (pc_w), labels and filename.
+
+        :param index: index of the file
+        :return: pc: [n_points, dims], labels, filename
+        """
+        with open(self.paths_files[index], 'rb') as f:
+            pc = torch.load(f).numpy()  # [points, dims, clusters]
+
+        # get cluster
+        filename = self.paths_files[index].split('/')[-1]
+        pc = pc[:, :, self.c_i[filename]]
+        self.c_i[filename] += 1
+
+        # sample points if fixed_num_points (random sampling, no RNN)
+        if self.fixed_num_points and pc.shape[0] > self.n_points:
+            sampling_indices = np.random.choice(pc.shape[0], self.n_points)
+            pc = pc[sampling_indices, :]
+            # FPS -> too slow
+            # pc = fps(pc, number_of_points)
+
+        try:
+            # duplicate points if needed
+            if self.fixed_num_points and pc.shape[0] < self.n_points:
+                points_needed = self.n_points - pc.shape[0]
+                rdm_list = np.random.randint(0, pc.shape[0], points_needed)
+                extra_points = pc[rdm_list, :]
+                pc = np.concatenate([pc, extra_points], axis=0)
+        except Exception as e:
+            print(e)
+            print(f'\n {filename}\n')
+
+        labels = self.get_labels_cls(pc)
+
+        pc = np.concatenate((pc[:, :3], pc[:, 4:10]), axis=1)
+        pc = self.pc_normalize_neg_one(pc)
+        pc = torch.from_numpy(pc)
+
+        return pc, labels, filename
+
+    @staticmethod
+    def pc_normalize_neg_one(pc):
+        """
+        Normalize between -1 and 1
+        [npoints, dim]
+        """
+        pc[:, 0] = pc[:, 0] * 2 - 1
+        pc[:, 1] = pc[:, 1] * 2 - 1
+        return pc
+
+    @staticmethod
+    def get_labels_cls(pointcloud):
+        """ Get labels for classification
+
+        Classification labels:
+        0 -> No tower (negative)
+        1 -> Tower (positive)
+        """
+        label = 0
+        unique, counts = np.unique(pointcloud[:, 3].astype(int), return_counts=True)
+        dic_counts = dict(zip(unique, counts))
+        if 15 in dic_counts.keys():
+            if dic_counts[15] >= 5:
+                label = 1
+        if 14 in dic_counts.keys():
+            if dic_counts[14] >= 5:
+                label = 1
+
+        return label
+
+
+class LidarDatasetExpanded(data.Dataset):
+    NUM_CLASSIFICATION_CLASSES = 2
+    POINT_DIMENSION = 2
+
+    def __init__(self, dataset_folder,
+                 task='classification',
+                 number_of_points=None,
+                 files=None,
+                 fixed_num_points=True):
+        # 0 -> no tower
+        # 1 -> tower
+        self.dataset_folder = dataset_folder
+        self.task = task
+        self.n_points = number_of_points
+        self.files = files
+        self.fixed_num_points = fixed_num_points
+        self.classes_mapping = {}
+        self.paths_files = [os.path.join(self.dataset_folder, f) for f in self.files]
+        self.classes_mapping = {}
+        self._init_mapping()
+
+    def __len__(self):
+        return len(self.paths_files)
+
+    def _init_mapping(self):
+
+        for file in self.files:
+            if 'pc_' in file:
+                self.classes_mapping[file] = 0
+            elif 'tower_' in file:
+                self.classes_mapping[file] = 1
+            elif 'powerline_' in file:
+                self.classes_mapping[file] = 1
+
+        self.len_towers = sum(value == 1 for value in self.classes_mapping.values())
+        self.len_landscape = sum(value == 0 for value in self.classes_mapping.values())
+
+    def __getitem__(self, index):
+        """
+        If task is classification, it returns a raw point cloud (pc), labels and filename
+        If task is segmentation, it returns a raw point cloud (pc), clustered point cloud (pc_w), labels and filename.
+
+        :param index: index of the file
+        :return: pc: [n_points, dims], pc_w: [2048, dims, w_len], labels, filename
+        """
+        filename = self.paths_files[index]
+        pc = self.prepare_data(filename,
+                               self.n_points,
+                               fixed_num_points=self.fixed_num_points)
+        # pc size [2048,11]
+
+        if self.task == 'segmentation':
+            labels = self.get_labels_segmen(pc)
+        else:
+            # labels = self.get_labels_cls(pc)
+            labels = self.classes_mapping[self.files[index]]
+
+        pc = np.concatenate((pc[:, :3], pc[:, 4:10]), axis=1)
+        # Normalize
+        pc = self.pc_normalize_neg_one(pc)
+        # .unsqueeze(1), pc[:, 6:8], pc[:, 9].unsqueeze(1)), axis=1)
+        return pc, labels, filename
+
+    @staticmethod
+    def pc_normalize_neg_one(pc):
+        """
+        Normalize between -1 and 1
+        [npoints, dim]
+        """
+        pc[:, 0] = pc[:, 0] * 2 - 1
+        pc[:, 1] = pc[:, 1] * 2 - 1
+        # centroid = np.mean(pc, axis=0)
+        # pc = pc - centroid
+        # m = np.max(np.sqrt(np.sum(pc ** 2, axis=1)))
+        # pc = pc / m
+        return pc
+
+    @staticmethod
+    def prepare_data(point_file,
+                     number_of_points=None,
+                     fixed_num_points=True,
+                     constrained_sample=False):
+
+        with open(point_file, 'rb') as f:
+            pc = pickle.load(f).astype(np.float32)  # [2048, 11]
+
+        # if constrained sampling -> get points labeled for sampling
+        if constrained_sample:
+            pc = pc[pc[:, 10] == 1]  # should be flag of position 10
+
+        # sample points if fixed_num_points (random sampling, no RNN)
+        if fixed_num_points and pc.shape[0] > number_of_points:
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            pc = pc[sampling_indices, :]
+            # FPS -> too slow
+            # pc = fps(pc, number_of_points)
+
+        try:
+            # duplicate points if needed
+            if fixed_num_points and pc.shape[0] < number_of_points:
+                points_needed = number_of_points - pc.shape[0]
+                rdm_list = np.random.randint(0, pc.shape[0], points_needed)
+                extra_points = pc[rdm_list, :]
+                pc = np.concatenate([pc, extra_points], axis=0)
+        except Exception as e:
+            print(e)
+            print(f'\n {point_file}\n')
+
+        pc = torch.from_numpy(pc)
+        return pc
+
+    @staticmethod
+    def get_labels_cls(pointcloud):
+        """ Get labels for classification or segmentation
+
+        Classification labels:
+        0 -> No tower (negative)
+        1 -> Tower (positive)
+        """
+        label = 0
+        unique, counts = np.unique(pointcloud[:, 3].astype(int), return_counts=True)
+        dic_counts = dict(zip(unique, counts))
+        if 15 in dic_counts.keys():
+            if dic_counts[15] >= 5:
+                label = 1
+        if 14 in dic_counts.keys():
+            if dic_counts[14] >= 5:
+                label = 1
+
+        return label
+
+    @staticmethod
+    def get_labels_segmen(pointcloud):
+        """
+        Segmentation labels:
+        0 -> background (other classes we're not interested)
+        1 -> tower
+        2 -> lines
+        3 -> low-med vegetation
+        4 -> high vegetation
+        5 -> other towers
+
+        :param pointcloud: [n_points, dim, seq_len]
+        :return labels: points with categories to segment or classify
+        """
+        segment_labels = pointcloud[:, 3]
+        segment_labels[segment_labels == 15] = 100
+        segment_labels[segment_labels == 14] = 200
+        segment_labels[segment_labels == 3] = 300  # low veg
+        segment_labels[segment_labels == 4] = 300  # med veg
+        segment_labels[segment_labels == 5] = 400
+        # segment_labels[segment_labels == 18] = 500
+        segment_labels[segment_labels < 100] = 0
+        segment_labels = (segment_labels / 100)
+
+        labels = segment_labels.type(torch.LongTensor)  # [2048, 5]
+
+        return labels
+
+
+class LidarKmeansDataset(data.Dataset):
+    NUM_CLASSIFICATION_CLASSES = 2
+    POINT_DIMENSION = 2  # we use 2 dimensions (x,y) to learn T-Net transformation
+
+    def __init__(self, dataset_folder,
+                 task='classification',
+                 number_of_points=None,
+                 files=None,
+                 fixed_num_points=True,
+                 c_sample=False,
+                 sort_kmeans=False,
+                 get_centroids=True):
+
+        self.dataset_folder = dataset_folder
+        self.task = task
+        self.n_points = number_of_points
+        self.files = files
+        # self.files = [f.split('.')[0] for f in files]
+        self.sort_kmeans = sort_kmeans
+        self.get_centroids = get_centroids
+        self.classes_mapping = {}
+        self.constrained_sampling = c_sample
+        self.paths_files = [os.path.join(self.dataset_folder, f) for f in self.files]
+
+    def __len__(self):
+        return len(self.paths_files)
+
+    def __getitem__(self, index):
+        """
+        If task is classification and no path_kmeans is given, it returns a raw point cloud (pc), labels and filename
+        If task is classification and path_kmeans is given, it returns a clustered point cloud into windows (pc_w),
+        labels and filename
+        If task is segmentation, it returns a raw point cloud (pc), clustered point cloud (pc_w), labels and filename.
+
+        :param index: index of the file
+        :return: pc: [n_points, dims], pc_w: [2048, dims, w_len], labels, filename
+        """
+        filename = self.paths_files[index]
+
+        # load data clustered in windows with k-means
+        pc = torch.load(filename, map_location=torch.device('cpu'))
+        # pc size [2048, dims=12, w_len]
+
+        # Targets
+        if self.task == 'classification':
+            labels_cls = self.get_labels_cls(pc)
+
+        labels_segmen = self.get_labels_segmen(pc)
+        # Drop not used features data
+        pc = np.concatenate((pc[:, :3, :], pc[:, 4:10, :]), axis=1)
+        # Normalize
+        pc = self.pc_normalize_neg_one(pc)
+
+        # Get cluster centroids
+        if self.get_centroids:
+            centroids = self.get_cluster_centroid(pc)
+
+        if self.task == 'segmentation':
+            return pc, labels_segmen, filename, centroids
+        else:
+            return pc, labels_cls, filename, centroids, labels_segmen
+
+    @staticmethod
+    def pc_normalize_neg_one(pc):
+        """
+        Normalize between -1 and 1
+        [npoints, dim, seq]
+        """
+        pc[:, 0, :] = pc[:, 0, :] * 2 - 1
+        pc[:, 1, :] = pc[:, 1, :] * 2 - 1
+        return pc
+
+    @staticmethod
+    def sort(pc):
+        """
+        sort clusters
+        :param pc:
+        :return:
+        """
+        sorted_pc = torch.FloatTensor()
+        mean_x = pc[:, 0, :].mean(0)  # [1, n_clusters]
+        mean_y = pc[:, 1, :].mean(0)  # [1, n_clusters]
+
+        means = mean_x + mean_y
+        order = torch.argsort(means)
+        for ix in order:
+            sorted_pc = torch.cat([sorted_pc, pc[:, :, ix].unsqueeze(-1)], dim=2)
+
+        return sorted_pc
+
+    @staticmethod
+    def get_cluster_centroid(pc):
+        """
+        :param pc: point cloud (2048,9,9) (n_p, dims, n_clusters)
+        :return:
+        """
+        mean_x = pc[:, 0, :].mean(0)  # [1, n_clusters]
+        mean_y = pc[:, 1, :].mean(0)  # [1, n_clusters]
+
+        centroids = np.stack([mean_x, mean_y], axis=0)
+        return centroids
+
+    @staticmethod
+    def get_labels_cls(pointcloud):
+        """ Get labels for classification or segmentation
+
+        Classification labels:
+        0 -> No tower (negative)
+        1 -> Tower (positive)
+        """
+        label = 0
+        unique, counts = np.unique(pointcloud[:, 3].numpy().astype(int), return_counts=True)
+        dic_counts = dict(zip(unique, counts))
+        if 15 in dic_counts.keys():
+            if dic_counts[15] >= 5:
+                label = 1
+        if 14 in dic_counts.keys():
+            if dic_counts[14] >= 5:
+                label = 1
+
+        return label
+
+    @staticmethod
+    def get_labels_segmen(pointcloud):
+        """
+
+        Segmentation labels:
+        0 -> background (other classes we're not interested)
+        1 -> tower
+        2 -> lines
+        3 -> low-med vegetation
+        4 -> high vegetation
+        5 -> other towers
+
+        :param pointcloud: [n_points, dim, seq_len]
+        :param point_cloud_class: point cloud category
+        :param task: classification or segmentation
+
+        :return labels: points with categories to segment or classify
+        """
+        segment_labels = pointcloud[:, 3]
+        segment_labels[segment_labels == 15] = 100
+        segment_labels[segment_labels == 14] = 200
+        segment_labels[segment_labels == 3] = 300  # low veg
+        segment_labels[segment_labels == 4] = 300  # med veg
+        segment_labels[segment_labels == 5] = 400
+        segment_labels[segment_labels < 100] = 0
+        segment_labels = (segment_labels / 100)
+
+        labels = segment_labels.type(torch.LongTensor)  # [2048, 5]
+
+        return labels
+
+
+class LidarDataset4Test(data.Dataset):
+    NUM_CLASSIFICATION_CLASSES = 2
+    POINT_DIMENSION = 2
+
+    def __init__(self,
+                 dataset_folder,
+                 task='classification',
+                 number_of_points=None,
+                 files=None):
+        self.dataset_folder = dataset_folder
+        self.task = task
+        self.n_points = number_of_points
+        self.files = files
+        self.classes_mapping = {}
+        self.paths_files = [os.path.join(self.dataset_folder, f) for f in self.files]
+
+    def __len__(self):
+        return len(self.paths_files)
+
+    def __getitem__(self, index):
+        """
+        If task is classification and no path_kmeans is given, it returns a raw point cloud (pc), labels and filename
+        If task is classification and path_kmeans is given, it returns a clustered point cloud into windows (pc_w),
+        labels and filename
+        If task is segmentation, it returns a raw point cloud (pc), clustered point cloud (pc_w), labels and filename.
+
+        :param index: index of the file
+        :return: pc: [n_points, dims], pc_w: [2048, dims, w_len], labels, filename
+        """
+        filename = self.paths_files[index]
+
+        # load data clustered in windows with k-means
+        with open(filename, 'rb') as f:
+            pc = torch.load(f)
+            # pc = pickle.load(f)
+            # pc = torch.from_numpy(pc).type(torch.FloatTensor)
+
+        pc = np.concatenate((pc[:, :3], pc[:, 4:10], pc[:, 3].unsqueeze(-1)), axis=1)  # last col is label
+        pc = self.pc_normalize_neg_one(pc)
+        return pc, filename
+
+    @staticmethod
+    def pc_normalize_neg_one(pc):
+        """
+        Normalize between -1 and 1
+        [npoints, dim]
+        """
+        pc[:, 0] = pc[:, 0] * 2 - 1
+        pc[:, 1] = pc[:, 1] * 2 - 1
+        return pc
