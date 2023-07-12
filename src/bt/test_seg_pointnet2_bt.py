@@ -2,9 +2,9 @@ import argparse
 import os.path
 import time
 from torch.utils.data import random_split
-from src.datasets import BarlowTwinsDataset_no_ground
+from src.datasets import BarlowTwinsDataset
 import logging
-from src.models.pointnet2_sem_seg import PointNet2
+from src.models.pointnet2_sem_seg import *
 from src.utils.utils import *
 from src.utils.utils_plot import *
 from src.utils.get_metrics import *
