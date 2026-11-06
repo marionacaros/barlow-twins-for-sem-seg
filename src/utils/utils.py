@@ -2,7 +2,6 @@ import glob
 import numpy as np
 # import matplotlib.pyplot as plt
 import torch
-from k_means_constrained import KMeansConstrained
 from progressbar import progressbar
 import itertools
 import os
@@ -289,6 +288,7 @@ def split4cls_kmeans(o_points, n_points=2048, plot=False, writer_tensorboard=Non
             o_points = o_points[:, :n_points * (o_points.shape[1] // n_points), :]
 
         K_clusters = int(np.floor(o_points.shape[1] / n_points))
+        from k_means_constrained import KMeansConstrained  # optional dependency, imported lazily
         clf = KMeansConstrained(n_clusters=K_clusters, size_min=n_points, size_max=n_points, random_state=0)
 
         # loop over batches
@@ -429,7 +429,8 @@ def split4cls_rdm(points, n_points=2048, targets=[], device='cuda', duplicate=Tr
 
 
 def save_checkpoint_segmen_model(name, task, epoch, epochs_since_improvement, base_pointnet, segmen_model, opt_pointnet,
-                                 opt_segmen, accuracy, batch_size, learning_rate, number_of_points, weighing_method):
+                                 opt_segmen, accuracy, batch_size, learning_rate, number_of_points, weighing_method,
+                                 checkpoint_dir='src/checkpoints'):
     state = {
         'base_pointnet': base_pointnet.state_dict(),
         'segmen_net': segmen_model.state_dict(),
@@ -443,12 +444,13 @@ def save_checkpoint_segmen_model(name, task, epoch, epochs_since_improvement, ba
         'epochs_since_improvement': epochs_since_improvement,
         'accuracy': accuracy,
     }
-    filename = 'model_' + name + '.pth'
-    torch.save(state, 'src/checkpoints/' + filename)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    torch.save(state, os.path.join(checkpoint_dir, 'model_' + name + '.pth'))
 
 
 def save_checkpoint(name, epoch, epochs_since_improvement, model, optimizer, accuracy, batch_size,
-                    learning_rate, n_points, weighing_method=None, weights=[]):
+                    learning_rate, n_points, weighing_method=None, weights=None, checkpoint_dir='src/checkpoints'):
+    """Save a fine-tuning checkpoint to <checkpoint_dir>/<name>.pth and return its path."""
     state = {
         'model': model.state_dict(),
         'optimizer': optimizer.state_dict(),
@@ -459,10 +461,12 @@ def save_checkpoint(name, epoch, epochs_since_improvement, model, optimizer, acc
         'epochs_since_improvement': epochs_since_improvement,
         'accuracy': accuracy,
         'weighing_method': weighing_method,
-        'weights': weights
+        'weights': weights if weights is not None else []
     }
-    filename = name + '.pth'
-    torch.save(state, 'src/checkpoints/' + filename)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    path = os.path.join(checkpoint_dir, name + '.pth')
+    torch.save(state, path)
+    return path
 
 
 def adjust_learning_rate(optimizer, shrink_factor=0.1):
@@ -511,6 +515,7 @@ def kmeans_clustering(in_pc, n_points=2048, get_centroids=True, max_clusters=18,
         if k_clusters * n_points > in_pc.shape[0]:
             print('debug error')
 
+        from k_means_constrained import KMeansConstrained  # optional dependency, imported lazily
         clf = KMeansConstrained(n_clusters=k_clusters, size_min=n_points,
                                 n_init=5, max_iter=10, tol=0.01,
                                 verbose=False, random_state=None, copy_x=True, n_jobs=-1

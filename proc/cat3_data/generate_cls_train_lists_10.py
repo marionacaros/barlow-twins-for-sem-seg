@@ -1,3 +1,4 @@
+import argparse
 import random
 from progressbar import progressbar
 import os
@@ -7,15 +8,23 @@ import torch
 import numpy as np
 import multiprocessing
 
-# set variables
-# name = '_seg_files_veg'
-name = '_cls_files'
-o_path = 'train_test_files/RGBN_40x40_barlow_p1/no_ground/'
-path = '/home/m.caros/work/objectDetection/dicts/partition_1'
+parser = argparse.ArgumentParser(description='Block-based train/val/test split lists for LiDAR-CAT3.')
+parser.add_argument('--blocks_dir', type=str, required=True,
+                    help='folder with dataset_blocks_partition_{CAT3,RIBERA}_towers.json')
+parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
+parser.add_argument('--out_dir', type=str, default='train_test_files/RGBN_40x40_barlow_p1/no_ground/',
+                    help='output folder for the split lists')
+parser.add_argument('--num_cpus', type=int, default=16)
+args = parser.parse_args()
 
-with open(path + '/dataset_blocks_partition_CAT3_towers.json', 'r') as f:
+# set variables
+name = '_cls_files'
+o_path = os.path.join(args.out_dir, '')
+path = args.blocks_dir
+
+with open(os.path.join(path, 'dataset_blocks_partition_CAT3_towers.json'), 'r') as f:
     cat3_blocks = json.load(f)
-with open(path + '/dataset_blocks_partition_RIBERA_towers.json', 'r') as f:
+with open(os.path.join(path, 'dataset_blocks_partition_RIBERA_towers.json'), 'r') as f:
     rib_blocks = json.load(f)
 
 train_files = {}
@@ -26,7 +35,7 @@ test_files = {}
 def generate_list_files():
 
     # --------------------------------- DATASET BLOCKS PARTITION  -----------------------------------------------
-    main_path = '/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3'
+    main_path = args.dataset_folder
     ext = '.pt'
     pc_paths = glob.glob(main_path + '/pc_*' + ext)
     lines_paths = glob.glob(main_path + '/lines_*' + ext)
@@ -53,7 +62,7 @@ def generate_list_files():
     open(o_path + 'train' + name + '.txt', 'w')
     open(o_path + 'val' + name + '.txt', 'w')
     open(o_path + 'test' + name + '.txt', 'w')
-    parallel_proc(list_f, num_cpus=16)
+    parallel_proc(list_f, num_cpus=args.num_cpus)
 
 
 def block_partition(list_f):
@@ -160,7 +169,7 @@ def split_data(file, name='_cls_files'):
 
     if cat == 'pc' or cat == 'lines':
         with open(file, 'rb') as f:
-            pc = torch.load(f).numpy().astype(np.float32)
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy().astype(np.float32)
             pc = pc[pc[:, 3] != 2]
             pc = pc[pc[:, 3] != 8]
             pc = pc[pc[:, 3] != 13]

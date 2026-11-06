@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Training outputs
+src/runs/
+src/checkpoints/
+src/results/
+src/bt/checkpoints*/
+lightning_logs/
+log/
+*.ckpt
+*.pth
+
+# Local files
+*.pdf

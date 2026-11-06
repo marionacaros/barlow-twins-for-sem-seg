@@ -442,7 +442,7 @@ def plot_2d_sequence_tensorboard(pc, writer_tensorboard, filename, i_w):
     writer_tensorboard.add_figure(tag, plt.gcf(), i_w)
 
 
-def plot_3d_sequence_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_clusters=None):
+def plot_3d_sequence_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_clusters=None, directory=None):
 
     ax = plt.axes(projection='3d', xlim=(0, 1), ylim=(0, 1))
 
@@ -492,15 +492,16 @@ def plot_3d_sequence_tensorboard(pc, writer_tensorboard, filename, i_w, title, n
 
     ax.legend(handles=legend_elements, loc='center right', bbox_to_anchor=(1.45, 0.5))  # , bbox_to_anchor=(1.04, 0.5)
 
-    directory = '/home/m.caros/work/3DSemanticSegmentation/figures_notebooks/kmeans_seq/'
-    name = filename + '_' + str(i_w) + '.png'
-    plt.savefig(directory + name, bbox_inches='tight', dpi=100)
+    if directory:  # optionally also save the figure to disk
+        os.makedirs(directory, exist_ok=True)
+        plt.savefig(os.path.join(directory, os.path.basename(filename) + '_' + str(i_w) + '.png'),
+                    bbox_inches='tight', dpi=100)
 
     writer_tensorboard.add_figure(tag, plt.gcf(), i_w)
     plt.close()
 
 
-def plot_3d_dales_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_clusters=None):
+def plot_3d_dales_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_clusters=None, directory=None):
 
     ax = plt.axes(projection='3d')
 
@@ -511,9 +512,10 @@ def plot_3d_dales_tensorboard(pc, writer_tensorboard, filename, i_w, title, n_cl
     tag = str(n_clusters) + 'c-means_3Dxy' + filename.split('/')[-1]
     plt.title(title)
 
-    directory = '/home/m.caros/work/3DSemanticSegmentation/figures_notebooks/kmeans_seq/'
-    name = filename + '_' + str(i_w) + '.png'
-    plt.savefig(directory + name, bbox_inches='tight', dpi=100)
+    if directory:  # optionally also save the figure to disk
+        os.makedirs(directory, exist_ok=True)
+        plt.savefig(os.path.join(directory, os.path.basename(filename) + '_' + str(i_w) + '.png'),
+                    bbox_inches='tight', dpi=100)
 
     writer_tensorboard.add_figure(tag, plt.gcf(), i_w)
     plt.close()
