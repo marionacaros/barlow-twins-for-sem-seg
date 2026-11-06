@@ -1,9 +1,14 @@
 import argparse
+import glob
 import hashlib
 import logging
+import os
 import random
 import pickle
 import laspy
+import numpy as np
+import torch
+from progressbar import progressbar
 import time
 import multiprocessing
 
@@ -152,10 +157,10 @@ if __name__ == '__main__':
     # You must first have executed pdal on all files to get HeightAboveGround
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out_path', type=str, default='/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3',
+    parser.add_argument('--out_path', type=str, required=True,
                         help='output folder where processed files are stored')
-    parser.add_argument('--in_path', default='/dades/LIDAR/towers_detection/LAS_point_clouds_40x40')
-    parser.add_argument('--datasets', type=list, default=['RIBERA', 'cat3_data'], help='list of datasets names')
+    parser.add_argument('--in_path', type=str, required=True, help='output folder of 1_split_las.py')
+    parser.add_argument('--datasets', nargs='+', default=['RIBERA', 'cat3_data'], help='datasets names')
     parser.add_argument('--n_points', type=int, default=4096)
     parser.add_argument('--max_z', type=float, default=100.0)
 

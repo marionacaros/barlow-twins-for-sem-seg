@@ -72,7 +72,7 @@ class BarlowTwinsPN2(LightningModule):
         gl_feat1 = self.encoder(pc)  # gl_feat1 torch.Size([32, 1024])
         gl_feat2 = self.encoder(pc_noise)
 
-        z1 = self.projection_head(gl_feat1.view(-1, ))
+        z1 = self.projection_head(gl_feat1)
         z2 = self.projection_head(gl_feat2)
 
         return self.loss_fn(z1, z2)
@@ -102,25 +102,33 @@ class BarlowTwinsPN2(LightningModule):
 
         return [optimizer], [scheduler]
 
-    def add_noise(self, pc, ratio=None, device='cuda'):
+    def add_noise(self, pc, ratio=None):
         """
-        :param device:
-        :param pc: point cloud [n_points, 3]
-        :param ratio: percentage of points to modify
+        Move a random subset of points of each point cloud to random positions.
 
+        :param pc: batch of point clouds [batch, n_points, dims]
+        :param ratio: fraction of points to modify per point cloud
         """
         if not ratio:
             ratio = np.random.uniform(0.02, 0.05)
-        height = torch.max(pc[:, :, 2])
+        batch_size, n_points, _ = pc.shape
+        num_noise_points = int(n_points * ratio)
+        if num_noise_points == 0:
+            return pc
 
-        num_noise_points = int(pc.shape[0] * ratio)
+        # per-cloud max height
+        height = pc[:, :, 2].amax(dim=1).view(-1, 1)
 
-        # get points that will be noise
-        sampling_indices = np.random.choice(pc.shape[0], num_noise_points)
-        # Generate random values with uniform distribution within the specified ranges
-        pc[:, sampling_indices, 0] = torch.rand(num_noise_points).to(device) * 2 - 1  # x
-        pc[:, sampling_indices, 1] = torch.rand(num_noise_points).to(device) * 2 - 1  # y
-        pc[:, sampling_indices, 2] = torch.rand(num_noise_points).to(device) * height  # z
+        # different points for each cloud, sampled without replacement
+        idx = torch.rand(batch_size, n_points, device=pc.device).argsort(dim=1)[:, :num_noise_points]
+
+        # uniform random values: x, y in [-1, 1], z in [0, height]
+        noise = torch.rand(batch_size, num_noise_points, 3, device=pc.device, dtype=pc.dtype)
+        noise[:, :, :2] = noise[:, :, :2] * 2 - 1
+        noise[:, :, 2] = noise[:, :, 2] * height
+
+        idx = idx.unsqueeze(-1).expand(-1, -1, 3)
+        pc[:, :, :3] = pc[:, :, :3].scatter(1, idx, noise)
 
         return pc
 
@@ -188,7 +196,7 @@ class OnlineFineTunerClassifier(Callback):
             outputs: Sequence,
             batch: Sequence,
             batch_idx: int,
-            dataloader_idx: int,
+            dataloader_idx: int = 0,
     ) -> None:
         x, y, _ = batch  # = self.extract_online_finetuning_view(batch, pl_module.device)
 
@@ -283,13 +291,13 @@ def torch_rotate_point_cloud_z(batch_data, rotation_angle=None):
     if not rotation_angle:
         rotation_angle = torch.rand(1) * 2 * np.pi
 
-    rotated_data = torch.zeros(batch_data.shape, dtype=torch.float32)
+    rotated_data = torch.zeros(batch_data.shape, dtype=batch_data.dtype, device=batch_data.device)
     for k in range(batch_data.shape[0]):
         cosval = torch.cos(rotation_angle)
         sinval = torch.sin(rotation_angle)
         rotation_matrix = torch.tensor([[cosval, sinval, 0],
                                         [-sinval, cosval, 0],
-                                        [0, 0, 1]]).cuda()
+                                        [0, 0, 1]], dtype=batch_data.dtype, device=batch_data.device)
 
         shape_pc = batch_data[k, ...]  # [4096, 3]
         rotated_data[k, ...] = torch.mm(shape_pc,

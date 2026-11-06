@@ -5,6 +5,22 @@ import numpy as np
 import pickle
 
 
+def normalize_xy(pc):
+    """
+    Scale x and y (columns 0 and 1) of a [n_points, dims] cloud to [-1, 1], in place.
+
+    An axis with zero extent (all points share the same coordinate) is set to 0 instead of dividing by zero.
+    """
+    for axis in (0, 1):
+        lo, hi = pc[:, axis].min(), pc[:, axis].max()
+        extent = hi - lo
+        if extent > 0:
+            pc[:, axis] = 2 * ((pc[:, axis] - lo) / extent) - 1
+        else:
+            pc[:, axis] = 0.
+    return pc
+
+
 ############################ Datasets Production - Constrained sampling ###############################################
 
 
@@ -96,7 +112,7 @@ class LidarDataset(data.Dataset):
         counter = 0
         for point_file in self.files:
             with open(os.path.join(self.dataset_folder, point_file), 'rb') as f:
-                pc = torch.load(f).numpy()
+                pc = torch.load(f, map_location='cpu', weights_only=True).numpy()
                 # remove buildings for production
                 pc = pc[pc[:, 3] != 6]
 
@@ -134,7 +150,7 @@ class LidarDataset(data.Dataset):
         """
 
         with open(point_file, 'rb') as f:
-            pc = torch.load(f).numpy().astype(float)
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy().astype(float)
 
         # if constrained sampling -> get points labeled for sampling
         if constrained_sample:
@@ -145,7 +161,7 @@ class LidarDataset(data.Dataset):
 
         # random sample points if fixed_num_points
         if fixed_num_points and pc.shape[0] > number_of_points:
-            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points, replace=False)
             pc = pc[sampling_indices, :]
 
         # duplicate points if needed
@@ -156,8 +172,7 @@ class LidarDataset(data.Dataset):
             pc = np.concatenate([pc, extra_points], axis=0)
 
         # normalize axes between -1 and 1
-        pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
-        pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
+        pc = normalize_xy(pc)
         pc[:, 2] = pc[:, 6] * 2  # HAG
 
         return pc
@@ -309,7 +324,7 @@ class LidarInferenceDataset(data.Dataset):
         """
 
         with open(point_file, 'rb') as f:
-            pc = torch.load(f).numpy()
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy()
         if self.task == 'classification':
             pc = pc.astype(float)
 
@@ -324,7 +339,7 @@ class LidarInferenceDataset(data.Dataset):
 
         # random sample points if fixed_num_points
         if fixed_num_points and pc.shape[0] > number_of_points:
-            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points, replace=False)
             pc = pc[sampling_indices, :]
 
         # duplicate points if needed
@@ -335,8 +350,7 @@ class LidarInferenceDataset(data.Dataset):
             pc = np.concatenate([pc, extra_points], axis=0)
 
         # normalize axes between -1 and 1
-        pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
-        pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
+        pc = normalize_xy(pc)
         pc[:, 2] = pc[:, 6] * 2  # HAG
 
         # pc = torch.from_numpy(pc)
@@ -398,7 +412,7 @@ class BarlowTwinsDatasetWithGround(data.Dataset):
                      ground=True):
 
         with open(point_file, 'rb') as f:
-            pc = torch.load(f).numpy()  # [points, dims]
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy()  # [points, dims]
 
         # remove not classified points
         # pc = pc[pc[:, 3] != 1]
@@ -414,7 +428,7 @@ class BarlowTwinsDatasetWithGround(data.Dataset):
 
         # random sample points if fixed_num_points
         if fixed_num_points and pc.shape[0] > number_of_points:
-            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points, replace=False)
             pc = pc[sampling_indices, :]
 
         # duplicate points if needed
@@ -425,8 +439,7 @@ class BarlowTwinsDatasetWithGround(data.Dataset):
             pc = np.concatenate([pc, extra_points], axis=0)
 
         # normalize axes between -1 and 1
-        pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
-        pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
+        pc = normalize_xy(pc)
         # normalize height
         # pc[:, 2] = pc[:, 10] / 2  # HAG
         # pc[:, 2] = np.clip(pc[:, 2], 0.0, 1.0)
@@ -543,7 +556,7 @@ class BarlowTwinsDataset(data.Dataset):
                      ground=True):
 
         with open(point_file, 'rb') as f:
-            pc = torch.load(f).numpy()  # [points, dims]
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy()  # [points, dims]
             # pc = pickle.load(f).astype(np.float32)  # [17434, 14]
 
         # remove not classified points
@@ -561,7 +574,7 @@ class BarlowTwinsDataset(data.Dataset):
 
         # random sample points if fixed_num_points
         if fixed_num_points and pc.shape[0] > number_of_points:
-            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points, replace=False)
             pc = pc[sampling_indices, :]
 
         # duplicate points if needed
@@ -572,8 +585,7 @@ class BarlowTwinsDataset(data.Dataset):
             pc = np.concatenate([pc, extra_points], axis=0)
 
         # normalize axes between -1 and 1
-        pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1
-        pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1
+        pc = normalize_xy(pc)
         # Z normalization up to 50 m
         pc[:, 2] = pc[:, 10] / 2  # HAG
         pc[:, 2] = np.clip(pc[:, 2], 0.0, 1.0)
@@ -691,7 +703,7 @@ class DalesDataset(data.Dataset):
                 labels: float Tensor
                 filename: str
         """
-        filename = self.files[index]
+        filename = os.path.join(self.dataset_folder, self.files[index])
         pc = self.prepare_data(filename,
                                self.n_points,
                                fixed_num_points=self.fixed_num_points)
@@ -711,7 +723,7 @@ class DalesDataset(data.Dataset):
         counter = 0
         for point_file in self.files:
             with open(os.path.join(self.dataset_folder, point_file), 'rb') as f:
-                pc = torch.load(f).numpy()
+                pc = torch.load(f, map_location='cpu', weights_only=True).numpy()
 
             if pc.shape[0] > 1024:
                 checked_paths.append(point_file)
@@ -736,19 +748,19 @@ class DalesDataset(data.Dataset):
         """
 
         with open(point_file, 'rb') as f:
-            pc = torch.load(f).numpy()  # [points, dims]
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy()  # [points, dims]
 
-        # # random sample points if fixed_num_points
-        # if fixed_num_points and pc.shape[0] > number_of_points:
-        #     sampling_indices = np.random.choice(pc.shape[0], number_of_points)
-        #     pc = pc[sampling_indices, :]
-        #
-        # # duplicate points if needed
-        # elif fixed_num_points and pc.shape[0] < number_of_points:
-        #     points_needed = number_of_points - pc.shape[0]
-        #     rdm_list = np.random.randint(0, pc.shape[0], points_needed)
-        #     extra_points = pc[rdm_list, :]
-        #     pc = np.concatenate([pc, extra_points], axis=0)
+        # random sample points if fixed_num_points
+        if fixed_num_points and pc.shape[0] > number_of_points:
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points, replace=False)
+            pc = pc[sampling_indices, :]
+
+        # duplicate points if needed
+        elif fixed_num_points and pc.shape[0] < number_of_points:
+            points_needed = number_of_points - pc.shape[0]
+            rdm_list = np.random.randint(0, pc.shape[0], points_needed)
+            extra_points = pc[rdm_list, :]
+            pc = np.concatenate([pc, extra_points], axis=0)
 
         # Normalize x,y between -1 and 1
         pc = self.pc_normalize_neg_one(pc)
@@ -768,8 +780,7 @@ class DalesDataset(data.Dataset):
         Normalize between -1 and 1
         [npoints, dim]
         """
-        pc[:, 0] = 2 * ((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min())) - 1  # x
-        pc[:, 1] = 2 * ((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min())) - 1  # y
+        pc = normalize_xy(pc)
         return pc
 
     @staticmethod
@@ -861,7 +872,7 @@ class LidarDatasetClusters4cls(data.Dataset):
         :return: pc: [n_points, dims], labels, filename
         """
         with open(self.paths_files[index], 'rb') as f:
-            pc = torch.load(f).numpy()  # [points, dims, clusters]
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy()  # [points, dims, clusters]
 
         # get cluster
         filename = self.paths_files[index].split('/')[-1]
@@ -870,7 +881,7 @@ class LidarDatasetClusters4cls(data.Dataset):
 
         # sample points if fixed_num_points (random sampling, no RNN)
         if self.fixed_num_points and pc.shape[0] > self.n_points:
-            sampling_indices = np.random.choice(pc.shape[0], self.n_points)
+            sampling_indices = np.random.choice(pc.shape[0], self.n_points, replace=False)
             pc = pc[sampling_indices, :]
             # FPS -> too slow
             # pc = fps(pc, number_of_points)
@@ -1017,7 +1028,7 @@ class LidarDatasetExpanded(data.Dataset):
 
         # sample points if fixed_num_points (random sampling, no RNN)
         if fixed_num_points and pc.shape[0] > number_of_points:
-            sampling_indices = np.random.choice(pc.shape[0], number_of_points)
+            sampling_indices = np.random.choice(pc.shape[0], number_of_points, replace=False)
             pc = pc[sampling_indices, :]
             # FPS -> too slow
             # pc = fps(pc, number_of_points)
@@ -1125,7 +1136,7 @@ class LidarKmeansDataset(data.Dataset):
         filename = self.paths_files[index]
 
         # load data clustered in windows with k-means
-        pc = torch.load(filename, map_location=torch.device('cpu'))
+        pc = torch.load(filename, map_location='cpu', weights_only=True)
         # pc size [2048, dims=12, w_len]
 
         # Targets
@@ -1272,7 +1283,7 @@ class LidarDataset4Test(data.Dataset):
 
         # load data clustered in windows with k-means
         with open(filename, 'rb') as f:
-            pc = torch.load(f)
+            pc = torch.load(f, map_location='cpu', weights_only=True)
             # pc = pickle.load(f)
             # pc = torch.from_numpy(pc).type(torch.FloatTensor)
 

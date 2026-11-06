@@ -96,26 +96,28 @@ src/utils/          Metrics, checkpoints and helpers
 
 ## Usage
 
-Run the scripts from the repository root:
+Install the dependencies (Python 3.10) and run the scripts from the repository root:
 
 ```bash
+pip install -r requirements.txt
+
 # 1. Barlow Twins self-supervised pre-training
-PYTHONPATH=.:src python src/bt/train_BT_pretrainedPointNet.py
+PYTHONPATH=. python src/bt/train_BT_pretrainedPointNet.py --dataset_folder <data_dir>
 
 # 2. Fine-tune for semantic segmentation
-PYTHONPATH=.:src python src/bt/train_seg_pointnet_cat3_bt.py \
+PYTHONPATH=. python src/bt/train_seg_pointnet_cat3_bt.py \
+    --dataset_folder <data_dir> \
     --model_checkpoint <bt.ckpt> \
     --path_list_files train_test_files/RGBN_40x40_barlow_10
 
 # 3. Evaluate
-PYTHONPATH=.:src python src/bt/test_seg_pointnet_cat3.py \
+PYTHONPATH=. python src/bt/test_seg_pointnet_cat3.py \
+    --dataset_folder <data_dir> \
     --model_checkpoint <seg.pth> \
     --path_list_files train_test_files/RGBN_40x40_barlow_10
 ```
 
-`src/bt/` has matching scripts for DALES and for PointNet++. Dataset paths are hard-coded in the scripts, so edit them to match your setup.
-
-**Main dependencies:** PyTorch, PyTorch Lightning, torchmetrics, scikit-learn, NumPy, laspy, TensorBoard.
+`src/bt/` has matching scripts for DALES and for PointNet++. Run any script with `--help` to see its options.
 
 ## Citation
 

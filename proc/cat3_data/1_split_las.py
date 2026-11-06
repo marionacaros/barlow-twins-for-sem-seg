@@ -1,5 +1,10 @@
 import argparse
+import glob
 import logging
+import os
+
+import laspy
+import numpy as np
 from progressbar import progressbar
 from alive_progress import alive_bar
 import hashlib
@@ -146,11 +151,12 @@ def split_pointcloud(f):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out_path', type=str, default='/dades/LIDAR/towers_detection/LAS_point_clouds_40x40',
+    parser.add_argument('--out_path', type=str, required=True,
                         help='output folder where processed files are stored')
-    parser.add_argument('--datasets', type=list, default=['cat3_data', 'RIBERA'], help='list of datasets names')
-    parser.add_argument('--LAS_files_path', type=str)
-    parser.add_argument('--w_size', default=[40, 40])
+    parser.add_argument('--datasets', nargs='+', default=['cat3_data', 'RIBERA'], help='datasets names')
+    parser.add_argument('--LAS_files_path', type=str, required=True,
+                        help='folder with one sub-folder of raw LAS files per dataset (<LAS_files_path>/<dataset>)')
+    parser.add_argument('--w_size', type=int, nargs=2, default=[40, 40], help='window size in metres (x y)')
     args = parser.parse_args()
 
     W_SIZE = args.w_size
@@ -160,11 +166,7 @@ if __name__ == '__main__':
         # Our Datasets
         for dataset_name in args.datasets:
             DATASET = dataset_name
-            # paths
-            if dataset_name == 'cat3_data':
-                LAS_files_path = '/mnt/Lidar_M/DEMO_Productes_LIDARCAT3/LAS_def'
-            elif dataset_name == 'RIBERA':
-                LAS_files_path = '/mnt/Lidar_O/DeepLIDAR/VolVegetacioRibera_ClassTorres-Linies/LAS'
+            LAS_files_path = os.path.join(args.LAS_files_path, dataset_name)
 
             SAVE_PATH = os.path.join(args.out_path, dataset_name)
 

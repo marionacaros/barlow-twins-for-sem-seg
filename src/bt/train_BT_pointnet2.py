@@ -1,88 +1,108 @@
-from src.models.pointnet2_sem_seg import PointNet2
-from src.datasets import BarlowTwinsDataset
-from src.models.barlow_twins_PN2 import *
-from pytorch_lightning.callbacks import ModelCheckpoint
+"""Barlow Twins self-supervised pre-training of the PointNet++ encoder on LiDAR-CAT3."""
+import argparse
+import logging
+
+import pytorch_lightning as pl
+import torch
 from pytorch_lightning import Trainer
-import os
+from pytorch_lightning.callbacks import ModelCheckpoint
 
-batch_size = 150
-num_workers = 20
-max_epochs = 300
-encoder_out_dim = 512
-hidden_projector_dim = 512
-z_dim = 128
+from src.datasets import BarlowTwinsDataset
+from src.models.barlow_twins_PN2 import BarlowTwinsPN2, OnlineFineTunerClassifier
+from src.models.pointnet2_sem_seg import PointNet2
+from src.utils.train_utils import load_checkpoint, read_list, seed_worker
 
-dataset_folder = '/dades/LIDAR/towers_detection/datasets/pc_40x40_4096p_v3'
-n_points = 4300
-c_sample = False
-DEVICE = 'cuda'
-
-path_list_files = 'train_test_files/RGBN_40x40_barlow_10'
-
-# Datasets train / val / test
-with open(os.path.join(path_list_files, 'train_reduced_files_semdedup0996.txt'), 'r') as f:
-    train_files = f.read().splitlines()
-with open(os.path.join(path_list_files, 'train_labeled_cls_files.txt'), 'r') as f:
-    val_files = f.read().splitlines()
-
-# Initialize datasets
-train_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
-                                   task='classification',
-                                   number_of_points=n_points,
-                                   files=train_files,
-                                   fixed_num_points=True,
-                                   c_sample=c_sample,
-                                   )
-val_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
-                                 task='classification',
-                                 number_of_points=n_points,
-                                 files=val_files,
-                                 fixed_num_points=True,
-                                 c_sample=c_sample)
-
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                           num_workers=num_workers, drop_last=True)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
-                                         num_workers=num_workers, drop_last=True)
+NUM_SEG_CLASSES = 6
+NUM_PROBE_CLASSES = 4  # online linear probe on the cloud-level labels of BarlowTwinsDataset (classification task)
 
 
-segmen_net = PointNet2(num_classes=6,
-                       is_barlow=True,  # is_barlow=True returns only last embedding
-                       group_all=True)  # group_all=True groups all feats (512x16) of points in one
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
+    parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
+                        help='folder with the split lists')
+    parser.add_argument('--train_list', type=str, default='train_reduced_files_semdedup0996.txt',
+                        help='unlabeled files used for SSL training (inside --path_list_files)')
+    parser.add_argument('--val_list', type=str, default='train_labeled_cls_files.txt',
+                        help='labeled files used for validation and the online probe (inside --path_list_files)')
+    parser.add_argument('--init_checkpoint', type=str, default='',
+                        help='optional supervised PointNet++ checkpoint (best_model.pth) to initialise the encoder')
+    parser.add_argument('--number_of_points', type=int, default=4300,
+                        help='points sampled per cloud; the two views take the first and last 4096')
+    parser.add_argument('--batch_size', type=int, default=150, help='batch size')
+    parser.add_argument('--max_epochs', type=int, default=300, help='number of epochs')
+    parser.add_argument('--learning_rate', type=float, default=1e-4, help='learning rate')
+    parser.add_argument('--warmup_epochs', type=int, default=10, help='linear warm-up epochs')
+    parser.add_argument('--encoder_out_dim', type=int, default=512, help='encoder output size')
+    parser.add_argument('--hidden_projector_dim', type=int, default=512, help='projection head hidden size')
+    parser.add_argument('--z_dim', type=int, default=128, help='projection head output size')
+    parser.add_argument('--number_of_workers', type=int, default=20, help='number of workers for the dataloader')
+    parser.add_argument('--c_sample', action='store_true', help='use constrained sampling')
+    parser.add_argument('--output_dir', type=str, default='src/bt/checkpoints_PN2',
+                        help='folder for Lightning checkpoints and logs')
+    parser.add_argument('--seed', type=int, default=42, help='random seed')
+    return parser.parse_args()
 
-model_checkpoint = 'src/checkpoints/BT/PN2_no_pretraining/2023-04-04_12-57PN2/checkpoints/best_model.pth'
-# load models
-checkpoint = torch.load(model_checkpoint)
-segmen_net.load_state_dict(checkpoint['model_state_dict'])
-segmen_net = segmen_net.to(DEVICE)
 
-encoder = segmen_net.encoder.to(DEVICE)
+def main(args):
+    logging.basicConfig(level=logging.INFO)
+    pl.seed_everything(args.seed, workers=True)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# ------------- Training -------------
+    train_files = read_list(args.path_list_files, args.train_list)
+    val_files = read_list(args.path_list_files, args.val_list)
 
-model = BarlowTwinsPN2(
-    encoder=encoder,
-    encoder_out_dim=encoder_out_dim,
-    num_training_samples=len(train_dataset),
-    batch_size=batch_size,
-    z_dim=z_dim,
-    hidden_dim=hidden_projector_dim
-)
+    train_dataset = BarlowTwinsDataset(dataset_folder=args.dataset_folder,
+                                       task='classification',
+                                       number_of_points=args.number_of_points,
+                                       files=train_files,
+                                       fixed_num_points=True,
+                                       c_sample=args.c_sample)
+    val_dataset = BarlowTwinsDataset(dataset_folder=args.dataset_folder,
+                                     task='classification',
+                                     number_of_points=args.number_of_points,
+                                     files=val_files,
+                                     fixed_num_points=True,
+                                     c_sample=args.c_sample)
 
-# chkp='/home/m.caros/work/objectDetection/src/bt/checkpoints_cls/BT_segmen/epoch=10-step=5016.ckpt'
-# ckpt_dict = torch.load(chkp)
-# models.load_state_dict(ckpt_dict['state_dict'])
+    # drop_last on both loaders: the Barlow Twins loss normalises over the batch and needs full batches
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
+                                               num_workers=args.number_of_workers, drop_last=True,
+                                               worker_init_fn=seed_worker)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
+                                             num_workers=args.number_of_workers, drop_last=True,
+                                             worker_init_fn=seed_worker)
 
-online_finetuner = OnlineFineTunerClassifier(encoder_output_dim=encoder_out_dim, num_classes=4)
-checkpoint_callback = ModelCheckpoint(save_top_k=100,
-                                      dirpath='src/bt/checkpoints_PN2',
-                                      monitor='val_loss')
-trainer = Trainer(
-    max_epochs=max_epochs,
-    accelerator="auto",
-    devices=1 if torch.cuda.is_available() else None,  # limiting got iPython runs
-    callbacks=[checkpoint_callback, online_finetuner],  # online_finetuner
-    default_root_dir='src/bt'
-)
-torch.set_float32_matmul_precision('medium')
-trainer.fit(model, train_loader, val_loader)
+    segmen_net = PointNet2(num_classes=NUM_SEG_CLASSES,
+                           is_barlow=True,  # the encoder returns only the last embedding
+                           group_all=True)  # groups all point features into one global feature
+    if args.init_checkpoint:
+        checkpoint = load_checkpoint(args.init_checkpoint, device)
+        segmen_net.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Encoder initialised from {args.init_checkpoint}")
+    encoder = segmen_net.encoder.to(device)
+
+    model = BarlowTwinsPN2(encoder=encoder,
+                           encoder_out_dim=args.encoder_out_dim,
+                           num_training_samples=len(train_dataset),
+                           batch_size=args.batch_size,
+                           z_dim=args.z_dim,
+                           learning_rate=args.learning_rate,
+                           warmup_epochs=args.warmup_epochs,
+                           max_epochs=args.max_epochs,
+                           hidden_dim=args.hidden_projector_dim)
+
+    online_finetuner = OnlineFineTunerClassifier(encoder_output_dim=args.encoder_out_dim,
+                                                 num_classes=NUM_PROBE_CLASSES)
+    checkpoint_callback = ModelCheckpoint(save_top_k=100, dirpath=args.output_dir, monitor='val_loss')
+    trainer = Trainer(max_epochs=args.max_epochs,
+                      accelerator='auto',
+                      devices=1,
+                      callbacks=[checkpoint_callback, online_finetuner],
+                      default_root_dir=args.output_dir)
+    torch.set_float32_matmul_precision('medium')
+    trainer.fit(model, train_loader, val_loader)
+
+
+if __name__ == '__main__':
+    main(parse_args())

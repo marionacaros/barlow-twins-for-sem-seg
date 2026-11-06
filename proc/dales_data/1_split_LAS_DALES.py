@@ -1,7 +1,14 @@
 import argparse
+import glob
 import logging
-import time
 import multiprocessing
+import os
+import time
+
+import laspy
+import numpy as np
+import torch
+from progressbar import progressbar
 
 logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
                     level=logging.INFO,
@@ -59,10 +66,11 @@ def split_dataset_windows(file):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out_path', type=str, default='/home/m.caros/work/DALES/dales_25x25',
+    parser.add_argument('--out_path', type=str, required=True,
                         help='output folder where processed files are stored')
-    parser.add_argument('--LAS_files_path', type=str, default='/home/m.caros/work/DALES/dales_las')
-    parser.add_argument('--w_size', default=[25, 25])
+    parser.add_argument('--LAS_files_path', type=str, required=True,
+                        help='DALES folder with train/ and test/ sub-folders of LAS files')
+    parser.add_argument('--w_size', type=int, nargs=2, default=[25, 25], help='window size in metres (x y)')
     start_time = time.time()
 
     args = parser.parse_args()
@@ -71,9 +79,9 @@ if __name__ == '__main__':
 
     for dir in ['/train', '/test']:
 
-        LAS_files_path = args.LAS_files_path + dir
-        files = glob.glob(LAS_files_path + '/*.las')
-        SAVE_PATH = args.out_path + dir
+        LAS_files_path = os.path.join(args.LAS_files_path, dir.strip('/'))
+        files = glob.glob(os.path.join(LAS_files_path, '*.las'))
+        SAVE_PATH = os.path.join(args.out_path, dir.strip('/'))
 
         if not os.path.exists(SAVE_PATH):
             os.makedirs(SAVE_PATH)

@@ -1,0 +1,17 @@
+# Python 3.10. Versions are those the training and test scripts were checked with.
+# Install the torch build that matches your CUDA version first (https://pytorch.org/get-started/locally/).
+torch==2.5.1
+pytorch-lightning==2.3.0
+torchmetrics==1.1.2
+numpy==1.26.4
+scikit-learn==1.7.2
+laspy==2.5.4
+progressbar2==4.2.0
+prettytable==3.10.0
+tqdm==4.65.2
+tensorboard==2.17.0
+matplotlib==3.10.7
+
+# Only needed by the proc/ preprocessing scripts and the legacy k-means helpers in src/utils/utils.py.
+alive-progress==3.1.5
+k-means-constrained==0.7.3
