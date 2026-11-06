@@ -12,7 +12,7 @@ parser = argparse.ArgumentParser(description='Block-based train/val/test split l
 parser.add_argument('--blocks_dir', type=str, required=True,
                     help='folder with dataset_blocks_partition_{CAT3,RIBERA}_towers.json')
 parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
-parser.add_argument('--out_dir', type=str, default='train_test_files/RGBN_40x40_barlow_p1/no_ground/',
+parser.add_argument('--out_dir', type=str, required=True,
                     help='output folder for the split lists')
 parser.add_argument('--num_cpus', type=int, default=16)
 args = parser.parse_args()

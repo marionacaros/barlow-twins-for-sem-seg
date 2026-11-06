@@ -8,7 +8,7 @@ Fixes and improvements for this repository, highest priority first. Line numbers
 - [x] **Barlow Twins noise augmentation uses the wrong dimension.** `BarlowTwins.add_noise` reads `pc.shape[0]` (the batch size) as the number of points. With batch size 150, only about 4 points per cloud are perturbed instead of 2–10 % of 4096, and the indices are drawn from `[0, batch_size)`. Use `pc.shape[1]`. It also hard-codes `device='cuda'`; use `pc.device` instead (`src/models/barlow_twins.py:113-131`). Check the copy in `barlow_twins_PN2.py` too.
 - [x] **`DalesDataset` ignores `dataset_folder`.** `__getitem__` opens `self.files[index]` directly, but the split lists contain bare filenames (`5140_54390_w34.pt`), so files are only found if the current directory is the data folder. Join the path with `dataset_folder`, as `BarlowTwinsDataset` does (`src/datasets.py:~690`).
 - [x] **`DalesDataset` does not resample to a fixed point count.** The fixed-count sampling code in `prepare_data` is commented out, so `fixed_num_points` / `number_of_points` have no effect. Batches with size > 1 will fail to collate unless every file already has exactly N points. Restore the sampling (`src/datasets.py:741-751`).
-- [ ] **Split files used by the scripts are missing.** `train_labeled_cls_files.txt` is read by `train_BT_pretrainedPointNet*.py`, `train_BT_pointnet2.py` and `train_seg_pointnet_{cat3,dales}_bt.py`, but it isn't committed, and none of the `proc/` scripts clearly produce it under that name. Commit the files or document and fix how they are generated.
+- [x] **Split files used by the scripts are missing.** `train_labeled_cls_files.txt` is read by `train_BT_pretrainedPointNet*.py`, `train_BT_pointnet2.py` and `train_seg_pointnet_{cat3,dales}_bt.py`, but it isn't committed, and none of the `proc/` scripts clearly produce it under that name. Commit the files or document and fix how they are generated. *(Done: the committed `val_cls_files.txt` in each split folder is the labeled subset (10/20/50% of the windows; 12% for `RGBN_..._10`), so it is now the default `--labeled_list` / `--val_list`. Documented in the README.)*
 - [x] **Default `--path_list_files` points to a folder that doesn't exist.** In `train_seg_pointnet_cat3_bt.py:338` the default is `train_test_files/RGBN_40x40_barlow_p1/no_ground/`, which isn't in the repo.
 - [x] **`--c_sample` uses `type=bool`.** Any non-empty string, including `False`, parses as `True`. Use `action='store_true'`. The same applies to `type=list` for `--datasets` in `proc/cat3_data/1_split_las.py:151` and `2_preprocessing.py:158`, where `--datasets RIBERA` becomes `['R','I',...]`; use `nargs='+'`.
 
@@ -34,21 +34,21 @@ Fixes and improvements for this repository, highest priority first. Line numbers
 
 ## P3: Documentation
 
-- [ ] **Expand the README** to cover:
+- [x] **Expand the README** to cover:
   - installation;
   - expected data layout and per-point column meanings (x, y, z, class, …, HAG at column 10);
   - the end-to-end pipeline (`proc/` → split lists → BT pre-training → fine-tuning → test) with example commands;
   - how to get DALES and how to request LiDAR-CAT3 access;
   - the meaning of the `_10/_20/_50/_p1` split folders and `semdedup0996`.
-- [ ] **Add a citation.** Put a BibTeX entry for the MVA 2023 paper in the README.
-- [ ] **Release weights or document their absence.** Publish the pre-trained Barlow Twins / fine-tuned checkpoints, or state that they are not available.
-- [ ] **Add a results table.** Include per-class IoU for 10/20/50 % labels, with and without pre-training, so users can check their reproduction.
+- [x] **Add a citation.** Put a BibTeX entry for the MVA 2023 paper in the README. *(Already in the README.)*
+- [x] **Release weights or document their absence.** Publish the pre-trained Barlow Twins / fine-tuned checkpoints, or state that they are not available. *(Done: the README states that weights are not released.)*
+- [x] **Add a results table.** Include per-class IoU for 10/20/50 % labels, with and without pre-training, so users can check their reproduction. *(Done with what the paper reports: CAT3 at 12% and DALES at 10%. The paper gives the 20/50% results only as a plot.)*
 
 ## P4: Code cleanup
 
-- [ ] **Remove duplicated helpers.** `rotate_point_cloud_z` / `torch_rotate_point_cloud_z` exist in `src/utils/utils.py`, `src/bt/utils_barlow.py`, `src/models/barlow_twins.py` and `src/models/barlow_twins_PN2.py`. `BarlowTwinsLoss`, `ProjectionHead` and the warmup schedule are duplicated between `barlow_twins.py` and `barlow_twins_PN2.py`.
-- [ ] **Remove dead code and data from the published scope.** This covers `LidarDataset`, `LidarInferenceDataset`, `BarlowTwinsDatasetWithGround`, `LidarDatasetClusters4cls`, `LidarDatasetExpanded`, `LidarKmeansDataset` and `LidarDataset4Test` in `src/datasets.py`; `BarlowTwinsDataset_plot` in `barlow_twins.py`; the k-means and classification helpers in `utils.py`; the `collate_fns.py` variants; and the large commented-out blocks across scripts. Also reconsider whether `src/figures/` belongs in the repo.
-- [ ] **Merge near-duplicate train/test scripts.** The CAT3 and DALES versions differ mainly in dataset class, class count and class names. A single script with `--dataset {cat3,dales}` and a class-name table would replace the hand-written per-class `iou[...]` blocks.
-- [ ] **Remove leftovers from earlier projects.** Delete the no-op `global NUM_CLASSES, GLOBAL_FEAT_SIZE` at module level, and rename the TensorBoard path `src/runs/tower_detec/` and other names inherited from the tower-detection project.
-- [ ] **Fix misleading `--help` text.** `train_seg_pointnet2_bt.py` has help text that contradicts its actual defaults (for example "[default: 16]" for a default of 32).
-- [ ] **Add tests.** Minimal smoke tests (pytest) for dataset loading on a tiny synthetic `.pt` file, model forward shapes, `BarlowTwinsLoss`, and `get_iou_obj` edge cases.
+- [x] **Remove duplicated helpers.** `rotate_point_cloud_z` / `torch_rotate_point_cloud_z` exist in `src/utils/utils.py`, `src/bt/utils_barlow.py`, `src/models/barlow_twins.py` and `src/models/barlow_twins_PN2.py`. `BarlowTwinsLoss`, `ProjectionHead` and the warmup schedule are duplicated between `barlow_twins.py` and `barlow_twins_PN2.py`. *(Done: the rotations live in `src/utils/utils.py`; `BarlowTwinsPN2` subclasses `BarlowTwins` and shares the loss, projection head, probes and schedule.)*
+- [x] **Remove dead code and data from the published scope.** This covers `LidarDataset`, `LidarInferenceDataset`, `BarlowTwinsDatasetWithGround`, `LidarDatasetClusters4cls`, `LidarDatasetExpanded`, `LidarKmeansDataset` and `LidarDataset4Test` in `src/datasets.py`; `BarlowTwinsDataset_plot` in `barlow_twins.py`; the k-means and classification helpers in `utils.py`; the `collate_fns.py` variants; and the large commented-out blocks across scripts. Also reconsider whether `src/figures/` belongs in the repo. *(Done. `src/figures/` (paper figures, 11 MB) is kept: no code uses it, but it is documentation.)*
+- [x] **Merge near-duplicate train/test scripts.** The CAT3 and DALES versions differ mainly in dataset class, class count and class names. A single script with `--dataset {cat3,dales}` and a class-name table would replace the hand-written per-class `iou[...]` blocks. *(Done: `train_BT_pointnet.py`, `train_seg_pointnet.py` and `test_seg_pointnet.py` take `--dataset`; settings live in `DATASETS` in `src/datasets.py`.)*
+- [x] **Remove leftovers from earlier projects.** Delete the no-op `global NUM_CLASSES, GLOBAL_FEAT_SIZE` at module level, and rename the TensorBoard path `src/runs/tower_detec/` and other names inherited from the tower-detection project.
+- [x] **Fix misleading `--help` text.** `train_seg_pointnet2_bt.py` has help text that contradicts its actual defaults (for example "[default: 16]" for a default of 32).
+- [x] **Add tests.** Minimal smoke tests (pytest) for dataset loading on a tiny synthetic `.pt` file, model forward shapes, `BarlowTwinsLoss`, and `get_iou_obj` edge cases. *(Done: `tests/`, 25 tests, run with `pytest`.)*

@@ -1,3 +1,4 @@
+"""Test a fine-tuned PointNet++ on the LiDAR-CAT3 test split."""
 import argparse
 import logging
 import os
@@ -6,13 +7,13 @@ import time
 import torch
 from progressbar import progressbar
 
-from src.datasets import BarlowTwinsDataset
+from src.datasets import DATASETS, BarlowTwinsDataset
 from src.models.pointnet2_sem_seg import PointNet2
 from src.utils.get_metrics import SegmentationMetrics, report_segmentation
 from src.utils.train_utils import get_device, load_checkpoint, read_list, set_seed
-from src.utils.utils_plot import plot_pointcloud_with_labels_barlow
+from src.utils.utils_plot import CAT3_COLORS, plot_predictions
 
-CLASS_NAMES = ['building', 'tower', 'lines', 'low_veg', 'high_veg', 'roof']
+CLASS_NAMES = DATASETS['cat3']['class_names']
 NUM_CLASSES = len(CLASS_NAMES)
 
 
@@ -64,21 +65,21 @@ def test(dataset_folder,
                 sample.update(preds, targets)
                 miou = sample.mean_iou()
                 name = os.path.basename(file_name[0]).split('.')[0]
-                plot_pointcloud_with_labels_barlow(pc.squeeze(0).numpy(), preds, targets, miou,
-                                                   str(round(miou, 2)) + name + '_preds',
-                                                   path_plot=os.path.join(output_folder, 'figures'),
-                                                   point_size=3)
+                plot_predictions(pc.squeeze(0).numpy(), preds, targets, miou, f'{miou:.2f}_{name}_preds',
+                                 CLASS_NAMES, colors=CAT3_COLORS, path_plot=os.path.join(output_folder, 'figures'),
+                                 point_size=3)
 
     report_segmentation(metrics, CLASS_NAMES, model_name, n_params, round((time.time() - start_time) / 60, 3),
                         4096, os.path.join(output_folder, 'IoU-results-cat3-pn2.csv'))
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Test a fine-tuned PointNet++ on the LiDAR-CAT3 test split.')
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
     parser.add_argument('--output_folder', type=str, default='src/results/bt', help='output folder')
     parser.add_argument('--number_of_workers', type=int, default=0, help='number of workers for the dataloader')
-    parser.add_argument('--model_checkpoint', type=str, required=True, help='fine-tuned PointNet++ checkpoint (best_model.pth)')
+    parser.add_argument('--model_checkpoint', type=str, required=True, 
+                        help='fine-tuned PointNet++ checkpoint (best_model.pth)')
     parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
                         help='folder with test_cls_files.txt')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
