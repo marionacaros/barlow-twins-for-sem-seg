@@ -9,14 +9,14 @@ import numpy as np
 from torch.optim.lr_scheduler import MultiStepLR
 from tqdm import tqdm
 
-from src.datasets import BarlowTwinsDataset
-from src.models.barlow_twins_PN2 import BarlowTwinsPN2
+from src.datasets import DATASETS, BarlowTwinsDataset
+from src.models.barlow_twins import BarlowTwinsPN2
 from src.models.pointnet2_sem_seg import PointNet2, get_loss
 from src.utils.train_utils import (cat3_block_id, get_device, load_checkpoint, make_generator, read_list,
                                    seed_worker, set_seed, split_by_block, timestamp)
 from src.utils.utils import rotate_point_cloud_z
 
-classes = ['other_building', 'pylon', 'power lines', 'low veg', 'high veg', 'roof']
+classes = DATASETS['cat3']['class_names']
 seg_label_to_cat = dict(enumerate(classes))
 
 
@@ -42,8 +42,9 @@ def parse_args():
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
     parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
                         help='folder with the split lists')
-    parser.add_argument('--labeled_list', type=str, default='train_labeled_cls_files.txt',
-                        help='list (inside --path_list_files) of labeled files used for fine-tuning')
+    parser.add_argument('--labeled_list', type=str, default='val_cls_files.txt',
+                        help='labeled files used for fine-tuning, inside --path_list_files '
+                             '(val_cls_files.txt holds the labeled subset)')
     parser.add_argument('--val_fraction', type=float, default=0.1,
                         help='fraction of labeled files used for validation (split by block)')
     parser.add_argument('--number_of_workers', type=int, default=10, help='number of workers for the dataloader')

@@ -86,38 +86,98 @@ When the share of labeled data varies from 10% to 50%, the pre-trained models ou
 ## Repository structure
 
 ```
-proc/               Preprocessing: tile LAS files, clean and normalize, build train/val/test splits
-train_test_files/   Split lists per dataset and % of labeled data (10, 20, 50)
-src/datasets.py     Dataset classes (LiDAR-CAT3, DALES)
+proc/               Preprocessing: tile LAS files, clean and normalize, build split lists
+train_test_files/   Split lists per dataset and share of labeled data
+src/datasets.py     Dataset classes and per-dataset settings (LiDAR-CAT3, DALES)
 src/models/         PointNet, PointNet++ and Barlow Twins (PyTorch Lightning) models
 src/bt/             Entry points: SSL pre-training, fine-tuning and testing
-src/utils/          Metrics, checkpoints and helpers
+src/utils/          Metrics, augmentation, checkpoints, plotting and training helpers
+tests/              Unit tests on synthetic data (pytest)
 ```
 
-## Usage
+## Installation
 
-Install the dependencies (Python 3.10) and run the scripts from the repository root:
+Python 3.10:
 
 ```bash
 pip install -r requirements.txt
-
-# 1. Barlow Twins self-supervised pre-training
-PYTHONPATH=. python src/bt/train_BT_pretrainedPointNet.py --dataset_folder <data_dir>
-
-# 2. Fine-tune for semantic segmentation
-PYTHONPATH=. python src/bt/train_seg_pointnet_cat3_bt.py \
-    --dataset_folder <data_dir> \
-    --model_checkpoint <bt.ckpt> \
-    --path_list_files train_test_files/RGBN_40x40_barlow_10
-
-# 3. Evaluate
-PYTHONPATH=. python src/bt/test_seg_pointnet_cat3.py \
-    --dataset_folder <data_dir> \
-    --model_checkpoint <seg.pth> \
-    --path_list_files train_test_files/RGBN_40x40_barlow_10
+pytest                      # optional: runs the unit tests on synthetic data
 ```
 
-`src/bt/` has matching scripts for DALES and for PointNet++. Run any script with `--help` to see its options.
+Run every script from the repository root with `PYTHONPATH=.`. Each script lists its options with `--help`.
+
+## Data
+
+### Getting the data
+
+- **DALES** is public. Download the LAS tiles from the [DALES page](https://udayton.edu/engineering/research/centers/vision_lab/research/was_data_analysis_and_processing/dale.php).
+- **LiDAR-CAT3** belongs to the ICGC and is not publicly available. Contact the authors or the ICGC about access.
+
+### Expected layout
+
+All scripts take `--dataset_folder`, a flat folder of `.pt` files with one point cloud (window) each. Each file holds a float tensor of shape `[n_points, columns]`. The split lists hold file names relative to that folder.
+
+| Column | LiDAR-CAT3 | DALES |
+|---|---|---|
+| 0–2 | x, y, z | x, y, z |
+| 3 | classification (ICGC codes) | classification (DALES codes) |
+| 4 | intensity | return number |
+| 5 | R | number of returns |
+| 6–8 | G, B, NIR | |
+| 9 | NDVI | |
+| 10 | height above ground | |
+| 11 | constrained-sampling flag (`--c_sample`) | |
+
+When a window is loaded, its points are sampled (without replacement) or duplicated to a fixed count, and x and y are scaled to [-1, 1].
+- **LiDAR-CAT3:** unclassified and ground points are dropped, and z is replaced by height above ground / 2, clipped to [0, 1]. The model gets 9 features.
+- **DALES:** z is divided by 200 and the return attributes by 7. The model gets 5 features.
+
+### Split lists
+
+`train_test_files/<dataset>_40x40_barlow_<pct>/` holds the lists for each share of labeled data.
+
+| File | Content |
+|---|---|
+| `val_cls_files.txt` | **Labeled** windows used for fine-tuning. The scripts split them by block into train and validation, so overlapping windows never end up in both. |
+| `train_cls_files.txt` | The remaining, **unlabeled** training windows. |
+| `test_cls_files.txt` | Test windows. They are the same for every share of labeled data. |
+| `train_reduced_files_semdedup0996.txt` | (LiDAR-CAT3) Unlabeled windows left after semantic deduplication with threshold 0.996, used for Barlow Twins pre-training. |
+
+The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._10` holds the 12% labeled split used in the paper. `RGBN_..._p1` has the same lists plus `val_object_files.txt`. LiDAR-CAT3 test and validation windows come from separate blocks.
+
+## Usage
+
+The pipeline is: preprocessing (`proc/`) → split lists → Barlow Twins pre-training → fine-tuning → testing. The PointNet scripts take `--dataset cat3` (the default) or `--dataset dales`. Each dataset has its own default split folder, class weights and number of epochs.
+
+```bash
+# 0. Preprocessing (LiDAR-CAT3; for DALES run proc/dales_data/1_split_LAS_DALES.py)
+python proc/cat3_data/1_split_las.py --LAS_files_path <las_dir> --out_path <windows_dir>
+python proc/cat3_data/2_preprocessing.py --in_path <windows_dir> --out_path <data_dir>
+
+# 1. Barlow Twins self-supervised pre-training
+PYTHONPATH=. python src/bt/train_BT_pointnet.py --dataset cat3 --dataset_folder <data_dir>
+
+# 2. Fine-tune for semantic segmentation (omit --model_checkpoint to train from scratch)
+PYTHONPATH=. python src/bt/train_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
+    --model_checkpoint <bt.ckpt> --path_list_files train_test_files/RGBN_40x40_barlow_10
+
+# 3. Evaluate on the test split (add --plot to save a figure per window)
+PYTHONPATH=. python src/bt/test_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
+    --model_checkpoint <seg.pth> --path_list_files train_test_files/RGBN_40x40_barlow_10
+```
+
+The PointNet++ scripts follow the same steps for LiDAR-CAT3: `train_BT_pointnet2.py`, `train_seg_pointnet2.py` (pass the Barlow Twins checkpoint with `--checkpoint`) and `test_seg_pointnet2.py`.
+
+**Outputs.** These default folders are all git-ignored:
+- Barlow Twins checkpoints: `src/bt/checkpoints_<dataset>/`.
+- Fine-tuned PointNet checkpoints: `src/checkpoints/`.
+- TensorBoard logs: `src/runs/`.
+- PointNet++ runs: `log/sem_seg/`.
+- Test results: a CSV row per run in `src/results/`.
+
+The test scripts report IoU computed over the whole test split, plus the per-window average IoU that the original evaluation scripts computed.
+
+**Pre-trained weights** are not released.
 
 ## Citation
 

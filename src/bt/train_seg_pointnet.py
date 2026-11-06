@@ -1,3 +1,4 @@
+"""Fine-tune PointNet for semantic segmentation on LiDAR-CAT3 or DALES, optionally from a Barlow Twins checkpoint."""
 import argparse
 import logging
 import os
@@ -11,11 +12,11 @@ import torch.optim as optim
 from progressbar import progressbar
 from torch.utils.tensorboard import SummaryWriter
 
-from src.datasets import BarlowTwinsDataset
+from src.datasets import DATASETS, make_dataset
 from src.models.barlow_twins import BarlowTwins
 from src.models.pointnet import SegmentationPointNet
 from src.utils.get_metrics import SegmentationMetrics
-from src.utils.train_utils import (cat3_block_id, get_device, load_checkpoint, make_generator, read_list,
+from src.utils.train_utils import (get_device, load_checkpoint, make_generator, read_list,
                                    seed_worker, set_seed, split_by_block, timestamp)
 from src.utils.utils import rotate_point_cloud_z, save_checkpoint
 
@@ -23,10 +24,9 @@ logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
                     level=logging.INFO,
                     datefmt='%Y-%m-%d %H:%M:%S')
 
-CLASS_NAMES = ['other_buildings', 'pylon', 'power_lines', 'low_veg', 'med_high_veg', 'roof']
 
-
-def train(dataset_folder,
+def train(dataset,
+          dataset_folder,
           path_list_files,
           labeled_list,
           n_points,
@@ -36,7 +36,6 @@ def train(dataset_folder,
           number_of_workers,
           model_checkpoint,
           c_sample,
-          num_classes,
           val_fraction,
           seed,
           checkpoint_dir,
@@ -45,14 +44,17 @@ def train(dataset_folder,
           device):
     start_time = time.time()
     set_seed(seed)
+    config = DATASETS[dataset]
+    class_names = config['class_names']
+    num_classes = len(class_names)
     run_time = timestamp()
 
     # Labeled files, split into train/val by block so overlapping windows never end up in both sets
     labeled_files = read_list(path_list_files, labeled_list)
-    train_files, val_files = split_by_block(labeled_files, cat3_block_id, val_fraction=val_fraction, seed=seed)
+    train_files, val_files = split_by_block(labeled_files, config['block_id'], val_fraction=val_fraction, seed=seed)
     logging.info(f'Labeled files: {len(labeled_files)} (train {len(train_files)}, val {len(val_files)})')
 
-    name = f'1024_c{num_classes}'
+    name = f'_{dataset}_{os.path.basename(os.path.normpath(path_list_files))}'
     if model_checkpoint:
         name += '_barlow_' + os.path.basename(model_checkpoint).split('-')[0]
 
@@ -60,20 +62,8 @@ def train(dataset_folder,
     writer_val = SummaryWriter(os.path.join(log_dir, f'seg_{run_time}_val{name}'))
     logging.info(f"Tensorboard runs: {writer_train.get_logdir()}")
 
-    train_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
-                                       task='segmentation',
-                                       number_of_points=n_points,
-                                       files=train_files,
-                                       fixed_num_points=True,
-                                       c_sample=c_sample,
-                                       use_ground=False)
-    val_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,
-                                     task='segmentation',
-                                     number_of_points=n_points,
-                                     files=val_files,
-                                     fixed_num_points=True,
-                                     c_sample=c_sample,
-                                     use_ground=False)
+    train_dataset = make_dataset(dataset, dataset_folder, train_files, n_points, c_sample=c_sample)
+    val_dataset = make_dataset(dataset, dataset_folder, val_files, n_points, c_sample=c_sample)
 
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                    batch_size=batch_size,
@@ -90,7 +80,8 @@ def train(dataset_folder,
                                                  drop_last=False,
                                                  worker_init_fn=seed_worker)
 
-    pointnet = SegmentationPointNet(num_classes=num_classes, point_dimension=3, device=device).to(device)
+    pointnet = SegmentationPointNet(num_classes=num_classes, point_dimension=3, device=device,
+                                    channels_in=config['channels_in']).to(device)
     total_params = sum(p.numel() for p in pointnet.parameters() if p.requires_grad)
     logging.info(f"Total Trainable Params: {total_params}")
 
@@ -110,10 +101,9 @@ def train(dataset_folder,
 
     optimizer = optim.Adam(pointnet.parameters(), lr=learning_rate)
 
-    # double weight on under-represented classes (< 1% of points)
-    c_weights = torch.FloatTensor([2, 2, 2, 1, 1, 1]).to(device)
+    c_weights = torch.FloatTensor(config['class_weights']).to(device) if config['class_weights'] else None
     ce_loss = torch.nn.CrossEntropyLoss(weight=c_weights, reduction='mean', ignore_index=-1)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[50, 150], gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=config['milestones'], gamma=0.5)
 
     best_vloss = np.inf
     epochs_since_improvement = 0
@@ -153,8 +143,8 @@ def train(dataset_folder,
         writer_val.add_scalar('epochs_since_improvement', epochs_since_improvement, epoch)
         writer_val.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch)
         for c, (iou_t, iou_v) in enumerate(zip(train_metrics.iou_per_class(), val_metrics.iou_per_class())):
-            writer_train.add_scalar(f'_iou_{CLASS_NAMES[c]}', iou_t, epoch)
-            writer_val.add_scalar(f'_iou_{CLASS_NAMES[c]}', iou_v, epoch)
+            writer_train.add_scalar(f'_iou_{class_names[c]}', iou_t, epoch)
+            writer_val.add_scalar(f'_iou_{class_names[c]}', iou_v, epoch)
         writer_train.flush()
         writer_val.flush()
 
@@ -218,22 +208,23 @@ def train_loop(data, optimizer, ce_loss, pointnet, device, train=True):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Fine-tune PointNet for semantic segmentation on LiDAR-CAT3.')
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dataset', choices=sorted(DATASETS), default='cat3', help='dataset')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
-    parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
-                        help='folder with the split lists')
-    parser.add_argument('--labeled_list', type=str, default='train_labeled_cls_files.txt',
-                        help='list (inside --path_list_files) of labeled files used for fine-tuning')
+    parser.add_argument('--path_list_files', type=str, default=None,
+                        help='folder with the split lists (default: the dataset\'s 10%% split)')
+    parser.add_argument('--labeled_list', type=str, default='val_cls_files.txt',
+                        help='labeled files used for fine-tuning, inside --path_list_files (val_cls_files.txt '
+                             'holds the labeled subset of each split folder)')
     parser.add_argument('--val_fraction', type=float, default=0.1,
                         help='fraction of labeled files used for validation (split by block)')
     parser.add_argument('--number_of_points', type=int, default=4096, help='number of points per cloud')
-    parser.add_argument('--batch_size', type=int, default=32, help='batch size')
-    parser.add_argument('--epochs', type=int, default=100, help='number of epochs')
+    parser.add_argument('--batch_size', type=int, default=None, help='batch size (default: 32 cat3, 16 dales)')
+    parser.add_argument('--epochs', type=int, default=None, help='number of epochs (default: 100 cat3, 150 dales)')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
     parser.add_argument('--number_of_workers', type=int, default=16, help='number of workers for the dataloader')
     parser.add_argument('--model_checkpoint', type=str, default='', help='Barlow Twins (.ckpt) checkpoint to start from')
-    parser.add_argument('--c_sample', action='store_true', help='use constrained sampling')
-    parser.add_argument('--n_class', type=int, default=6, help='num classes to segment')
+    parser.add_argument('--c_sample', action='store_true', help='use constrained sampling (cat3 only)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--checkpoint_dir', type=str, default='src/checkpoints', help='where to save checkpoints')
     parser.add_argument('--log_dir', type=str, default='src/runs/bt', help='TensorBoard log folder')
@@ -241,18 +232,19 @@ if __name__ == '__main__':
                         help='also save a checkpoint every epoch after this one (-1: only the best val loss)')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
     args = parser.parse_args()
+    config = DATASETS[args.dataset]
 
-    train(dataset_folder=args.dataset_folder,
-          path_list_files=args.path_list_files,
+    train(dataset=args.dataset,
+          dataset_folder=args.dataset_folder,
+          path_list_files=args.path_list_files or config['path_list_files'],
           labeled_list=args.labeled_list,
           n_points=args.number_of_points,
-          batch_size=args.batch_size,
-          epochs=args.epochs,
+          batch_size=args.batch_size or config['batch_size'],
+          epochs=args.epochs or config['epochs'],
           learning_rate=args.learning_rate,
           number_of_workers=args.number_of_workers,
           model_checkpoint=args.model_checkpoint,
           c_sample=args.c_sample,
-          num_classes=args.n_class,
           val_fraction=args.val_fraction,
           seed=args.seed,
           checkpoint_dir=args.checkpoint_dir,

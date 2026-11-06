@@ -107,35 +107,6 @@ class BasePointNet(nn.Module):
             return global_feature, feature_transform
 
 
-class ClassificationPointNet(nn.Module):
-
-    def __init__(self, num_classes, dropout=0.3, point_dimension=3, dataset='', device=''):
-        super(ClassificationPointNet, self).__init__()
-        self.dataset = dataset
-
-        self.base_pointnet = BasePointNet(return_local_features=False, point_dimension=point_dimension,
-                                          dataset=self.dataset,
-                                          device=device)
-
-        self.fc_1 = nn.Linear(1024, 512)
-        self.fc_2 = nn.Linear(512, 256)
-        self.fc_3 = nn.Linear(256, num_classes)
-
-        self.bn_1 = nn.BatchNorm1d(512)
-        self.bn_2 = nn.BatchNorm1d(256)
-
-        self.dropout_1 = nn.Dropout(dropout)
-
-    def forward(self, x):
-        global_feature, feature_transform = self.base_pointnet(x)
-
-        x = F.relu(self.bn_1(self.fc_1(global_feature)))
-        x = F.relu(self.bn_2(self.fc_2(x)))
-        x = self.dropout_1(x)
-
-        return F.log_softmax(self.fc_3(x), dim=1), feature_transform
-
-
 class SegmentationPointNet(nn.Module):
 
     def __init__(self, num_classes,

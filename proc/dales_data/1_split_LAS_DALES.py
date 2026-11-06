@@ -14,7 +14,6 @@ logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
                     level=logging.INFO,
                     datefmt='%Y-%m-%d %H:%M:%S')
 
-global SAVE_PATH, W_SIZE, LAS_files_path
 
 
 def parallel_proc(files_list, num_cpus):

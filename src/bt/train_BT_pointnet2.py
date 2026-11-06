@@ -8,7 +8,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 from src.datasets import BarlowTwinsDataset
-from src.models.barlow_twins_PN2 import BarlowTwinsPN2, OnlineFineTunerClassifier
+from src.models.barlow_twins import BarlowTwinsPN2, OnlineFineTunerClassifier
 from src.models.pointnet2_sem_seg import PointNet2
 from src.utils.train_utils import load_checkpoint, read_list, seed_worker
 
@@ -23,7 +23,7 @@ def parse_args():
                         help='folder with the split lists')
     parser.add_argument('--train_list', type=str, default='train_reduced_files_semdedup0996.txt',
                         help='unlabeled files used for SSL training (inside --path_list_files)')
-    parser.add_argument('--val_list', type=str, default='train_labeled_cls_files.txt',
+    parser.add_argument('--val_list', type=str, default='val_cls_files.txt',
                         help='labeled files used for validation and the online probe (inside --path_list_files)')
     parser.add_argument('--init_checkpoint', type=str, default='',
                         help='optional supervised PointNet++ checkpoint (best_model.pth) to initialise the encoder')
