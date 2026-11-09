@@ -23,10 +23,6 @@ import laspy
 import numpy as np
 from progressbar import progressbar
 
-logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
-                    level=logging.INFO,
-                    datefmt='%Y-%m-%d %H:%M:%S')
-
 EDGE_TOLERANCE = 0.5  # metres a tile may extend past its last grid line before a new window row/column starts
 
 
@@ -96,7 +92,12 @@ def parallel_proc(files_list, save_path, w_size, num_cpus):
             pass
 
 
-if __name__ == '__main__':
+def parse_args():
+    """
+    Parse the command line.
+
+    :return: argparse.Namespace
+    """
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--out_path', type=str, required=True,
                         help='output folder where processed files are stored')
@@ -104,7 +105,18 @@ if __name__ == '__main__':
                         help='DALES folder with train/ and test/ sub-folders of LAS files')
     parser.add_argument('--w_size', type=int, nargs=2, default=[25, 25], help='window size in metres (x y)')
     parser.add_argument('--num_cpus', type=int, default=16, help='parallel processes')
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main(args):
+    """
+    Split the train and test DALES tiles into windows.
+
+    :param args: argparse.Namespace from `parse_args`
+    """
+    logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
+                        level=logging.INFO,
+                        datefmt='%Y-%m-%d %H:%M:%S')
     start_time = time.time()
 
     for split in ['train', 'test']:
@@ -113,3 +125,7 @@ if __name__ == '__main__':
         os.makedirs(save_path, exist_ok=True)
         parallel_proc(files, save_path, args.w_size, args.num_cpus)
         print("--- TOTAL TIME: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
+
+
+if __name__ == '__main__':
+    main(parse_args())

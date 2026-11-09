@@ -1,221 +1,134 @@
+"""
+Block-based train/val/test split lists for LiDAR-CAT3.
+
+Every window is assigned to the split of its block (spatial tile), read from the
+dataset_blocks_partition_{CAT3,RIBERA}_towers.json files in --blocks_dir. The lists are appended to
+<out_dir>/{train,val,test}_cls_files.txt.
+"""
 import argparse
-import random
-from progressbar import progressbar
-import os
 import glob
 import json
+import multiprocessing
+import os
+from functools import partial
+
+# import torch before numpy: some conda MKL builds of numpy need the OpenMP runtime torch loads
 import torch
 import numpy as np
-import multiprocessing
+from progressbar import progressbar
 
-parser = argparse.ArgumentParser(description='Block-based train/val/test split lists for LiDAR-CAT3.')
-parser.add_argument('--blocks_dir', type=str, required=True,
-                    help='folder with dataset_blocks_partition_{CAT3,RIBERA}_towers.json')
-parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
-parser.add_argument('--out_dir', type=str, required=True,
-                    help='output folder for the split lists')
-parser.add_argument('--num_cpus', type=int, default=16)
-args = parser.parse_args()
-
-# set variables
-name = '_cls_files'
-o_path = os.path.join(args.out_dir, '')
-path = args.blocks_dir
-
-with open(os.path.join(path, 'dataset_blocks_partition_CAT3_towers.json'), 'r') as f:
-    cat3_blocks = json.load(f)
-with open(os.path.join(path, 'dataset_blocks_partition_RIBERA_towers.json'), 'r') as f:
-    rib_blocks = json.load(f)
-
-train_files = {}
-val_files = {}
-test_files = {}
+LIST_SUFFIX = '_cls_files'
+MIN_NOT_GROUND_POINTS = 2048  # 'pc' and 'lines' windows with fewer non-ground points are left out
+SPLITS = ('train', 'val', 'test')
 
 
-def generate_list_files():
+def list_path(out_dir, split):
     """
-    Collect the .pt windows of --dataset_folder, shuffle them and write the train/val/test lists to --out_dir.
-    Takes no arguments: it reads the parsed command-line `args`.
+    :param out_dir: str, output folder
+    :param split: str, 'train', 'val' or 'test'
+    :return: str, path of the list file of `split`
     """
-    # --------------------------------- DATASET BLOCKS PARTITION  -----------------------------------------------
-    main_path = args.dataset_folder
-    ext = '.pt'
-    pc_paths = glob.glob(main_path + '/pc_*' + ext)
-    lines_paths = glob.glob(main_path + '/lines_*' + ext)
-    towers = glob.glob(main_path + '/tower_O*' + ext)
-
-    print(f'# Files background: {len(pc_paths)}')
-    print(f'# Files lines: {len(lines_paths)}')
-    print(f'# Files towers: {len(towers)}')
-
-    list_f = lines_paths + towers + pc_paths
-    print(f'First file path: {list_f[0]}')
-
-    # blocks train/val/test split
-    # block_partition(list_f)
-
-    # ------------------------------------ create textfile with names of files --------------------------------
-
-    if not os.path.exists(o_path):
-        os.makedirs(o_path)
-
-    print(f'Length all files: {len(list_f)}')
-    random.shuffle(list_f)
-
-    open(o_path + 'train' + name + '.txt', 'w')
-    open(o_path + 'val' + name + '.txt', 'w')
-    open(o_path + 'test' + name + '.txt', 'w')
-    parallel_proc(list_f, num_cpus=args.num_cpus)
+    return os.path.join(out_dir, split + LIST_SUFFIX + '.txt')
 
 
-def block_partition(list_f):
+def load_blocks(blocks_dir):
     """
-    Assign the blocks of the given windows to train/val/test (tower blocks spread over the three splits, the rest to
-    train) and write the partition to dicts/w80x80/*.json.
+    Blocks of each split, merged from the CAT3 and RIBERA partition files.
 
-    :param list_f: list of str, window file paths
+    :param blocks_dir: str, folder with dataset_blocks_partition_{CAT3,RIBERA}_towers.json
+    :return: dict {split: set of block names}
     """
-    rib_blocks = {'train': [], 'test': [], 'val': []}
-    cat3_blocks = {'train': [], 'test': [], 'val': []}
-    bdn_blocks = {'train': [], 'test': [], 'val': []}
-
-    l_tower_files = []
-    l_landscape_files = []
-    i = 0
-
-    for file in progressbar(list_f):
-
-        # tower_CAT3_504678_w11.pkl
-        # tower_RIBERA_pt438656_w18.pkl
-        # dataset = file.split('_')[-3]
-        if 'tower_v0' in file:
-            i += 1
-            l_tower_files.append(file.split('_')[-2])
-        else:
-            l_landscape_files.append(file.split('_')[-2])
-
-    l_tower_files = set(l_tower_files)
-    l_landscape_files = list(set(l_landscape_files) - l_tower_files)
-
-    print(f'num total towers: {i}')
-
-    # towers
-    for i, fileName in enumerate(l_tower_files):
-
-        # RIBERA
-        if 'pt' in fileName:
-            if fileName not in rib_blocks['test'] and len(rib_blocks['test']) < 3:
-                rib_blocks['test'].append(fileName)
-            elif len(rib_blocks['val']) < 3:
-                rib_blocks['val'].append(fileName)
-            else:
-                rib_blocks['train'].append(fileName)
-        # BDN
-        elif 'c' in fileName:
-            if fileName not in bdn_blocks['test'] and len(bdn_blocks['test']) < 1:
-                bdn_blocks['test'].append(fileName)
-            elif fileName not in bdn_blocks['val'] and len(bdn_blocks['val']) < 1:
-                bdn_blocks['val'].append(fileName)
-            else:
-                bdn_blocks['train'].append(fileName)
-        # cat3_data
-        else:
-            if fileName not in cat3_blocks['test'] and len(cat3_blocks['test']) < 8:
-                cat3_blocks['test'].append(fileName)
-            elif len(cat3_blocks['val']) < 8:
-                cat3_blocks['val'].append(fileName)
-            else:
-                cat3_blocks['train'].append(fileName)
-
-    print('len landscape files: ', len(l_landscape_files))
-    k = 0
-
-    # no towers files
-    for fileName in l_landscape_files:
-        k += 1
-        # RIBERA
-        if 'pt' in fileName:
-            rib_blocks['train'].append(fileName)
-        # BDN
-        elif 'c' in fileName:
-            bdn_blocks['train'].append(fileName)
-        # cat3_data
-        else:
-            cat3_blocks['train'].append(fileName)
-
-    print('saved landscape files: ', k)
-    print('TEST BLOCKS:')
-    print('---cat3_data---')
-    print(cat3_blocks['test'])
-    print('---Ribera---')
-    print(rib_blocks['test'])
-    print('---BDN---')
-    print(bdn_blocks['test'])
-
-    with open('dicts/w80x80/dataset_blocks_partition_CAT3_towers' + '.json', 'w') as f:
-        json.dump(cat3_blocks, f)
-    with open('dicts/w80x80/dataset_blocks_partition_RIBERA_towers' + '.json', 'w') as f:
-        json.dump(rib_blocks, f)
-    with open('dicts/w80x80/dataset_blocks_partition_BDN_towers' + '.json', 'w') as f:
-        json.dump(bdn_blocks, f)
+    blocks = {split: set() for split in SPLITS}
+    for name in ('CAT3', 'RIBERA'):
+        with open(os.path.join(blocks_dir, f'dataset_blocks_partition_{name}_towers.json'), 'r') as f:
+            partition = json.load(f)  # {'train': [block, ...], 'val': [...], 'test': [...]}
+        for split in SPLITS:
+            blocks[split].update(partition[split])
+    return blocks
 
 
-def parallel_proc(files_list, num_cpus):
+def split_data(file, out_dir, blocks):
+    """
+    Append the window's file name to the train, val or test list of its block. 'pc' and 'lines' windows with fewer
+    than MIN_NOT_GROUND_POINTS non-ground points are skipped.
+
+    :param file: str, path of a .pt window
+    :param out_dir: str, output folder of the lists
+    :param blocks: dict {split: set of block names}, from `load_blocks`
+    """
+    filename = os.path.basename(file)
+    block_name = filename.split('_')[-2]  # e.g. pc_0_RIBERA_pt440650_w12.pt -> pt440650
+    window_type = filename.split('_')[0]
+
+    if window_type in ('pc', 'lines'):
+        with open(file, 'rb') as f:
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy().astype(np.float32)
+        n_not_ground = np.isin(pc[:, 3], [2, 8, 13], invert=True).sum()  # 2, 8, 13: ground classes
+        if n_not_ground < MIN_NOT_GROUND_POINTS:
+            return
+
+    for split in SPLITS:
+        if block_name in blocks[split]:
+            # every worker appends one line at a time to the shared list file
+            with open(list_path(out_dir, split), 'a') as list_file:
+                list_file.write(filename + '\n')
+            return
+
+
+def parallel_proc(files_list, out_dir, blocks, num_cpus):
     """
     Run `split_data` on every file with a multiprocessing pool.
 
     :param files_list: list of str, .pt window paths
+    :param out_dir: str, output folder of the lists
+    :param blocks: dict {split: set of block names}
     :param num_cpus: int, number of processes
     """
-    p = multiprocessing.Pool(processes=num_cpus)
-
-    for _ in progressbar(p.imap_unordered(split_data, files_list, 1),
-                         max_value=len(files_list)):  # redirect_stdout=True)
-        pass
-    p.close()
-    p.join()
+    worker = partial(split_data, out_dir=out_dir, blocks=blocks)
+    with multiprocessing.Pool(processes=num_cpus) as p:
+        for _ in progressbar(p.imap_unordered(worker, files_list, 1), max_value=len(files_list)):
+            pass
 
 
-def split_data(file, name='_cls_files'):
+def parse_args():
     """
-    Append the window's file name to the train, val or test list of its block. 'pc' and 'lines' windows with fewer
-    than 2048 non-ground points are skipped.
+    Parse the command line.
 
-    :param file: str, path of a .pt window
-    :param name: str, suffix of the list files
+    :return: argparse.Namespace
     """
-    blockName = file.split('_')[-2]  # block ie pt440650
-    filename = file.split('/')[-1]
-    cat = filename.split('_')[0]
-    version = filename.split('_')[1]
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--blocks_dir', type=str, required=True,
+                        help='folder with dataset_blocks_partition_{CAT3,RIBERA}_towers.json')
+    parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
+    parser.add_argument('--out_dir', type=str, required=True, help='output folder for the split lists')
+    parser.add_argument('--num_cpus', type=int, default=16, help='parallel processes')
+    return parser.parse_args()
 
-    if cat == 'pc' or cat == 'lines':
-        with open(file, 'rb') as f:
-            pc = torch.load(f, map_location='cpu', weights_only=True).numpy().astype(np.float32)
-            pc = pc[pc[:, 3] != 2]
-            pc = pc[pc[:, 3] != 8]
-            pc = pc[pc[:, 3] != 13]
 
-        if pc.shape[0] < 2048:
-            return None
+def main(args):
+    """
+    Collect the .pt windows of --dataset_folder and write the train/val/test lists to --out_dir.
 
-    # train
-    if blockName in cat3_blocks['train'] or blockName in rib_blocks['train']:
-        out_name = o_path + 'train'
-    # val
-    elif blockName in cat3_blocks['val'] or blockName in rib_blocks['val']:
-        out_name = o_path + 'val'
-    # test
-    elif blockName in cat3_blocks['test'] or blockName in rib_blocks['test']:
-        out_name = o_path + 'test'
-    else:
-        return None
+    :param args: argparse.Namespace from `parse_args`
+    """
+    blocks = load_blocks(args.blocks_dir)
 
-    file_object = open(out_name + name + '.txt', 'a')
-    file_object.write(filename)
-    file_object.write('\n')
-    file_object.close()
+    # window types: background landscape, power lines and towers
+    pc_paths = glob.glob(os.path.join(args.dataset_folder, 'pc_*.pt'))
+    lines_paths = glob.glob(os.path.join(args.dataset_folder, 'lines_*.pt'))
+    towers = glob.glob(os.path.join(args.dataset_folder, 'tower_O*.pt'))
+    print(f'# Files background: {len(pc_paths)}')
+    print(f'# Files lines: {len(lines_paths)}')
+    print(f'# Files towers: {len(towers)}')
+    list_f = lines_paths + towers + pc_paths
+    print(f'Length all files: {len(list_f)}')
+
+    # start from empty lists: split_data appends to them
+    os.makedirs(args.out_dir, exist_ok=True)
+    for split in SPLITS:
+        open(list_path(args.out_dir, split), 'w').close()
+    parallel_proc(list_f, args.out_dir, blocks, num_cpus=args.num_cpus)
 
 
 if __name__ == '__main__':
-    generate_list_files()
+    main(parse_args())

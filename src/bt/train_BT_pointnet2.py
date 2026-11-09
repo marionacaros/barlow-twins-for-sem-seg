@@ -42,7 +42,6 @@ def parse_args():
     parser.add_argument('--hidden_projector_dim', type=int, default=512, help='projection head hidden size')
     parser.add_argument('--z_dim', type=int, default=128, help='projection head output size')
     parser.add_argument('--number_of_workers', type=int, default=20, help='number of workers for the dataloader')
-    parser.add_argument('--c_sample', action='store_true', help='use constrained sampling')
     parser.add_argument('--output_dir', type=str, default='src/bt/checkpoints_PN2',
                         help='folder for Lightning checkpoints and logs')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
@@ -66,14 +65,12 @@ def main(args):
                                        task='classification',
                                        number_of_points=args.number_of_points,
                                        files=train_files,
-                                       fixed_num_points=True,
-                                       c_sample=args.c_sample)
+                                       fixed_num_points=True)
     val_dataset = BarlowTwinsDataset(dataset_folder=args.dataset_folder,
                                      task='classification',
                                      number_of_points=args.number_of_points,
                                      files=val_files,
-                                     fixed_num_points=True,
-                                     c_sample=args.c_sample)
+                                     fixed_num_points=True)
 
     # drop_last on both loaders: the Barlow Twins loss normalises over the batch and needs full batches
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True,
@@ -99,7 +96,6 @@ def main(args):
                            z_dim=args.z_dim,
                            learning_rate=args.learning_rate,
                            warmup_epochs=args.warmup_epochs,
-                           max_epochs=args.max_epochs,
                            hidden_dim=args.hidden_projector_dim)
 
     online_finetuner = OnlineFineTunerClassifier(encoder_output_dim=args.encoder_out_dim,

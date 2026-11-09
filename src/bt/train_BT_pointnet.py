@@ -38,12 +38,11 @@ def parse_args():
                         help='points sampled per cloud; the two views take the first and last 4096 '
                              '(default: 4500 for cat3, 4096 for dales)')
     parser.add_argument('--batch_size', type=int, default=150, help='batch size')
-    parser.add_argument('--max_epochs', type=int, default=None, help='number of epochs (default: 120 cat3, 150 dales)')
+    parser.add_argument('--max_epochs', type=int, default=None, help='number of epochs (default: 300 cat3, 150 dales)')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='learning rate')
     parser.add_argument('--warmup_epochs', type=int, default=10, help='linear warm-up epochs')
     parser.add_argument('--z_dim', type=int, default=128, help='projection head output size')
     parser.add_argument('--number_of_workers', type=int, default=16, help='number of workers for the dataloader')
-    parser.add_argument('--c_sample', action='store_true', help='use constrained sampling (cat3 only)')
     parser.add_argument('--output_dir', type=str, default=None,
                         help='folder for Lightning checkpoints and logs (default: src/bt/checkpoints_<dataset>)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
@@ -75,7 +74,7 @@ def main(args):
     if config['ssl_add_labeled']:
         train_files = train_files + val_files
 
-    datasets = [make_dataset(args.dataset, args.dataset_folder, files, args.number_of_points, c_sample=args.c_sample)
+    datasets = [make_dataset(args.dataset, args.dataset_folder, files, args.number_of_points)
                 for files in (train_files, val_files)]
 
     # drop_last on both loaders: the Barlow Twins loss normalises over the batch and needs full batches
@@ -102,7 +101,6 @@ def main(args):
                         z_dim=args.z_dim,
                         learning_rate=args.learning_rate,
                         warmup_epochs=args.warmup_epochs,
-                        max_epochs=args.max_epochs,
                         num_classes=num_classes)
 
     online_finetuner = OnlineFineTuner(encoder_output_dim=ENCODER_OUT_DIM, num_classes=num_classes)

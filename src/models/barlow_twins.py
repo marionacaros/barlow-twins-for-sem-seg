@@ -14,209 +14,111 @@ from src.utils.utils import torch_rotate_point_cloud_z
 VIEW_POINTS = 4096  # points per view: the first and last 4096 of each sampled cloud
 
 
-# ------------------------------------------------ BARLOW TWINS ------------------------------------------------
+# ------------------------------------------------ LR SCHEDULE ------------------------------------------------
 
-class BarlowTwins(LightningModule):
-    """Barlow Twins around a PointNet encoder (`BasePointNet` built with is_barlow=True)."""
+def _warmup_factor(warmup_steps, step):
+    """
+    Learning-rate multiplier: step / warmup_steps during warm-up, then 1.
 
-    def __init__(
-            self,
-            encoder,
-            encoder_out_dim,
-            num_training_samples,
-            batch_size,
-            lambda_coeff=5e-3,
-            z_dim=128,
-            learning_rate=1e-4,
-            warmup_epochs=10,
-            max_epochs=200,
-            num_classes=4,
-            hidden_projector=512
-    ):
+    :param warmup_steps: int
+    :param step: int, current optimizer step
+    :return: float
+    """
+    if step < warmup_steps:
+        return float(step) / float(max(1, warmup_steps))
+    return 1.0
+
+
+def linear_warmup_decay(warmup_steps):
+    """
+    Linear warm-up over `warmup_steps`, then a constant learning rate.
+
+    :param warmup_steps: int
+    :return: callable step -> float, for `LambdaLR`
+    """
+    return partial(_warmup_factor, warmup_steps)
+
+
+# ------------------------------------------------ LOSS ------------------------------------------------
+
+class BarlowTwinsLoss(nn.Module):
+    """Barlow Twins cross-correlation loss between the embeddings of two views."""
+
+    def __init__(self, batch_size, lambda_coeff=5e-3):
         """
-        :param encoder: nn.Module, PointNet encoder (`BasePointNet` with is_barlow=True)
-        :param encoder_out_dim: int, size of the global feature
-        :param num_training_samples: int, training set size (sets the warm-up length in steps)
-        :param batch_size: int
+        :param batch_size: int, divides the cross-correlation matrix
         :param lambda_coeff: float, weight of the off-diagonal (redundancy) term
-        :param z_dim: int, projection head output size
-        :param learning_rate: float
-        :param warmup_epochs: int, linear warm-up epochs
-        :param max_epochs: int
-        :param num_classes: int, classes of the online probe
-        :param hidden_projector: int, projection head hidden size
         """
         super().__init__()
 
-        self.encoder = encoder
-        self.projection_head = ProjectionHead(input_dim=encoder_out_dim,
-                                              hidden_dim=hidden_projector,
-                                              output_dim=z_dim)
-        self.loss_fn = BarlowTwinsLoss(batch_size=batch_size, lambda_coeff=lambda_coeff, z_dim=z_dim)
-        self.learning_rate = learning_rate
-        self.warmup_epochs = warmup_epochs
-        self.max_epochs = max_epochs
-        # replaced by the OnlineFineTuner callback at fit start; defined here so checkpoints load strictly
-        self.online_finetuner = segmentation_probe(num_classes)
-
-        self.train_iters_per_epoch = num_training_samples // batch_size
-
-    def forward(self, x):
-        """
-        Encode a batch of clouds.
-
-        :param x: torch.Tensor [batch, n_points, dims]
-        :return: global feature [batch, 1024], per-point features [batch, n_points, 1088]
-        """
-        gl_feat1, feat_segmen, _ = self.encoder(x)
-        return gl_feat1, feat_segmen
-
-    def global_features(self, pc):
-        """
-        Global feature of a cloud, used for the Barlow Twins loss.
-
-        :param pc: torch.Tensor [batch, n_points, dims]
-        """
-        return self.encoder(pc)[0]
-
-    def shared_step(self, batch):
-        """
-        Build two augmented views of each cloud and return their Barlow Twins loss.
-
-        :param batch: tuple (pc torch.Tensor [batch, n_points, dims], labels, filenames)
-        :return: scalar torch.Tensor
-        """
-        pc, _, _ = batch  # [batch, n_points (~4500), dims]
-        # two views: first and last VIEW_POINTS points
-        pc_noise = pc.clone()
-        pc = pc[:, :VIEW_POINTS, :]
-        pc_noise = pc_noise[:, -VIEW_POINTS:, :]
-        # move 2-5% (view 1) and 10% (view 2) of the points to random positions
-        pc = self.add_noise(pc)
-        pc_noise = self.add_noise(pc_noise, ratio=0.1)
-
-        # rotate point clouds
-        pc[:, :, :3] = torch_rotate_point_cloud_z(pc[:, :, :3])
-        pc_noise[:, :, :3] = torch_rotate_point_cloud_z(pc_noise[:, :, :3])
-
-        z1 = self.projection_head(self.global_features(pc))
-        z2 = self.projection_head(self.global_features(pc_noise))
-
-        return self.loss_fn(z1, z2)
-
-    def training_step(self, batch, batch_idx):
-        """
-        Lightning training step; logs train_loss.
-
-        :param batch: tuple, see `shared_step`
-        :param batch_idx: int
-        """
-        loss = self.shared_step(batch)
-        self.log("train_loss", loss, on_step=True, on_epoch=True)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        """
-        Lightning validation step; logs val_loss.
-
-        :param batch: tuple, see `shared_step`
-        :param batch_idx: int
-        """
-        loss = self.shared_step(batch)
-        self.log("val_loss", loss, on_step=True, on_epoch=True)
-
-    def configure_optimizers(self):
-        """
-        Adam with a per-step linear warm-up.
-
-        :return: [optimizer], [scheduler dict]
-        """
-        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
-
-        warmup_steps = self.train_iters_per_epoch * self.warmup_epochs
-
-        scheduler = {
-            "scheduler": torch.optim.lr_scheduler.LambdaLR(
-                optimizer,
-                linear_warmup_decay(warmup_steps),
-            ),
-            "interval": "step",
-            "frequency": 1,
-        }
-
-        return [optimizer], [scheduler]
+        self.batch_size = batch_size
+        self.lambda_coeff = lambda_coeff
 
     @staticmethod
-    def add_noise(pc, ratio=None):
+    def off_diagonal_ele(x):
         """
-        Move a random subset of points of each point cloud to random positions.
+        Flattened off-diagonal elements of a square matrix.
 
-        :param pc: torch.Tensor [batch, n_points, dims], batch of point clouds (modified in place)
-        :param ratio: float or None, fraction of points to modify per point cloud (default: uniform in [0.02, 0.05])
+        :param x: torch.Tensor [n, n]
+        :return: torch.Tensor [n * (n - 1)]
         """
-        if not ratio:
-            ratio = np.random.uniform(0.02, 0.05)
-        batch_size, n_points, _ = pc.shape
-        num_noise_points = int(n_points * ratio)
-        if num_noise_points == 0:
-            return pc
+        # taken from https://github.com/facebookresearch/barlowtwins/blob/main/main.py
+        # Dropping the last element of the flattened n x n matrix leaves n*n - 1 = (n - 1)(n + 1) values; viewed as
+        # (n - 1) rows of n + 1, every diagonal element lands in column 0, so [:, 1:] keeps only off-diagonal ones.
+        n, m = x.shape
+        assert n == m
+        return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
-        # per-cloud max height
-        height = pc[:, :, 2].amax(dim=1).view(-1, 1)
-
-        # different points for each cloud, sampled without replacement
-        idx = torch.rand(batch_size, n_points, device=pc.device).argsort(dim=1)[:, :num_noise_points]
-
-        # uniform random values: x, y in [-1, 1], z in [0, height]
-        noise = torch.rand(batch_size, num_noise_points, 3, device=pc.device, dtype=pc.dtype)
-        noise[:, :, :2] = noise[:, :, :2] * 2 - 1
-        noise[:, :, 2] = noise[:, :, 2] * height
-
-        idx = idx.unsqueeze(-1).expand(-1, -1, 3)
-        pc[:, :, :3] = pc[:, :, :3].scatter(1, idx, noise)
-
-        return pc
-
-
-class BarlowTwinsPN2(BarlowTwins):
-    """Barlow Twins around the PointNet++ abstraction encoder (`PointNetAbstractionEncoder` with is_barlow=True)."""
-
-    def __init__(self, encoder, encoder_out_dim, num_training_samples, batch_size, lambda_coeff=5e-3, z_dim=128,
-                 learning_rate=1e-4, warmup_epochs=10, max_epochs=200, num_classes=6, hidden_dim=512):
+    def forward(self, z1, z2):
         """
-        Same arguments as `BarlowTwins`; the online probe is a cloud-level classifier.
+        Barlow Twins loss: (1 - diagonal)^2 + lambda * off-diagonal^2 of the cross-correlation matrix of the
+        normalized embeddings.
 
-        :param encoder: nn.Module, `PointNetAbstractionEncoder` with is_barlow=True
-        :param encoder_out_dim: int, size of the global feature (512)
-        :param num_training_samples: int, training set size
-        :param batch_size: int
-        :param lambda_coeff: float, weight of the off-diagonal term
-        :param z_dim: int, projection head output size
-        :param learning_rate: float
-        :param warmup_epochs: int
-        :param max_epochs: int
-        :param num_classes: int, classes of the online probe
-        :param hidden_dim: int, projection head hidden size
+        :param z1: torch.Tensor [batch, z_dim], embeddings of view 1
+        :param z2: torch.Tensor [batch, z_dim], embeddings of view 2
+        :return: scalar torch.Tensor
         """
-        super().__init__(encoder, encoder_out_dim, num_training_samples, batch_size, lambda_coeff=lambda_coeff,
-                         z_dim=z_dim, learning_rate=learning_rate, warmup_epochs=warmup_epochs,
-                         max_epochs=max_epochs, num_classes=num_classes, hidden_projector=hidden_dim)
-        self.online_finetuner = classification_probe(encoder_out_dim, num_classes)
+        # standardize every embedding dimension over the batch (z: [batch, z_dim])
+        z1_norm = (z1 - torch.mean(z1, dim=0)) / torch.std(z1, dim=0)
+        z2_norm = (z2 - torch.mean(z2, dim=0)) / torch.std(z2, dim=0)
+
+        # [z_dim, z_dim] cross-correlation between the dimensions of the two views
+        cross_corr = torch.matmul(z1_norm.T, z2_norm) / self.batch_size
+
+        # invariance: diagonal -> 1 (same dimension agrees across views);
+        # redundancy reduction: off-diagonal -> 0 (different dimensions are decorrelated)
+        on_diag = torch.diagonal(cross_corr).add_(-1).pow_(2).sum()
+        off_diag = self.off_diagonal_ele(cross_corr).pow_(2).sum()
+
+        return on_diag + self.lambda_coeff * off_diag
+
+
+# ------------------------------------------------ PROJECTION HEAD ------------------------------------------------
+
+class ProjectionHead(nn.Module):
+    """MLP that maps the encoder global feature to the embedding used by the loss."""
+
+    def __init__(self, input_dim=1024, hidden_dim=512, output_dim=128):
+        """
+        :param input_dim: int, encoder feature size
+        :param hidden_dim: int, hidden layer size
+        :param output_dim: int, embedding size
+        """
+        super().__init__()
+
+        self.projection_head = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim, bias=True),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, output_dim, bias=False),
+        )
 
     def forward(self, x):
         """
-        :param x: torch.Tensor [batch, n_points, dims]
-        :return: global feature [batch, encoder_out_dim]
+        :param x: torch.Tensor [batch, input_dim] or [batch, input_dim, 1] (flattened)
+        :return: torch.Tensor [batch, output_dim]
         """
-        return self.global_features(x)
-
-    def global_features(self, pc):
-        """
-        Global PointNet++ feature (the encoder expects channels first).
-
-        :param pc: torch.Tensor [batch, n_points, dims]
-        """
-        return self.encoder(pc.transpose(2, 1))
+        return self.projection_head(x.flatten(1))
 
 
 # ------------------------------------------------ ONLINE PROBES ------------------------------------------------
@@ -413,102 +315,206 @@ class OnlineFineTunerClassifier(_OnlineProbe):
         return pl_module(x)
 
 
-# ---------------------------------------  LOSS  ------------------------------------------------
+# ------------------------------------------------ BARLOW TWINS ------------------------------------------------
 
-class BarlowTwinsLoss(nn.Module):
-    def __init__(self, batch_size, lambda_coeff=5e-3, z_dim=128):
+class BarlowTwins(LightningModule):
+    """Barlow Twins around a PointNet encoder (`BasePointNet` built with is_barlow=True)."""
+
+    def __init__(
+            self,
+            encoder,
+            encoder_out_dim,
+            num_training_samples,
+            batch_size,
+            lambda_coeff=5e-3,
+            z_dim=128,
+            learning_rate=1e-4,
+            warmup_epochs=10,
+            num_classes=4,
+            hidden_projector=512
+    ):
         """
-        :param batch_size: int, divides the cross-correlation matrix
+        :param encoder: nn.Module, PointNet encoder (`BasePointNet` with is_barlow=True)
+        :param encoder_out_dim: int, size of the global feature
+        :param num_training_samples: int, training set size (sets the warm-up length in steps)
+        :param batch_size: int
         :param lambda_coeff: float, weight of the off-diagonal (redundancy) term
-        :param z_dim: int, embedding size
+        :param z_dim: int, projection head output size
+        :param learning_rate: float
+        :param warmup_epochs: int, linear warm-up epochs
+        :param num_classes: int, classes of the online probe
+        :param hidden_projector: int, projection head hidden size
         """
         super().__init__()
 
-        self.z_dim = z_dim
-        self.batch_size = batch_size
-        self.lambda_coeff = lambda_coeff
+        self.encoder = encoder
+        self.projection_head = ProjectionHead(input_dim=encoder_out_dim,
+                                              hidden_dim=hidden_projector,
+                                              output_dim=z_dim)
+        self.loss_fn = BarlowTwinsLoss(batch_size=batch_size, lambda_coeff=lambda_coeff)
+        self.learning_rate = learning_rate
+        self.warmup_epochs = warmup_epochs
+        # replaced by the OnlineFineTuner callback at fit start; defined here so checkpoints load strictly
+        self.online_finetuner = segmentation_probe(num_classes)
 
-    @staticmethod
-    def off_diagonal_ele(x):
-        """
-        Flattened off-diagonal elements of a square matrix.
-
-        :param x: torch.Tensor [n, n]
-        :return: torch.Tensor [n * (n - 1)]
-        """
-        # taken from: https://github.com/facebookresearch/barlowtwins/blob/main/main.py
-        # return a flattened view of the off-diagonal elements of a square matrix
-        n, m = x.shape
-        assert n == m
-        return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
-
-    def forward(self, z1, z2):
-        """
-        Barlow Twins loss: (1 - diagonal)^2 + lambda * off-diagonal^2 of the cross-correlation matrix of the
-        normalized embeddings.
-
-        :param z1: torch.Tensor [batch, z_dim], embeddings of view 1
-        :param z2: torch.Tensor [batch, z_dim], embeddings of view 2
-        :return: scalar torch.Tensor
-        """
-        # N x D, where N is the batch size and D is output dim of projection head
-        z1_norm = (z1 - torch.mean(z1, dim=0)) / torch.std(z1, dim=0)
-        z2_norm = (z2 - torch.mean(z2, dim=0)) / torch.std(z2, dim=0)
-
-        cross_corr = torch.matmul(z1_norm.T, z2_norm) / self.batch_size
-
-        on_diag = torch.diagonal(cross_corr).add_(-1).pow_(2).sum()
-        off_diag = self.off_diagonal_ele(cross_corr).pow_(2).sum()
-
-        return on_diag + self.lambda_coeff * off_diag
-
-
-# ---------------------------------------  PROJECTION HEAD  ------------------------------------------------
-
-class ProjectionHead(nn.Module):
-    def __init__(self, input_dim=1024, hidden_dim=512, output_dim=128):
-        """
-        :param input_dim: int, encoder feature size
-        :param hidden_dim: int, hidden layer size
-        :param output_dim: int, embedding size
-        """
-        super().__init__()
-
-        self.projection_head = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim, bias=True),
-            nn.BatchNorm1d(hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim, bias=False),
-        )
+        self.train_iters_per_epoch = num_training_samples // batch_size
 
     def forward(self, x):
         """
-        :param x: torch.Tensor [batch, input_dim] or [batch, input_dim, 1] (flattened)
-        :return: torch.Tensor [batch, output_dim]
+        Encode a batch of clouds.
+
+        :param x: torch.Tensor [batch, n_points, dims]
+        :return: global feature [batch, 1024], per-point features [batch, n_points, 1088]
         """
-        return self.projection_head(x.flatten(1))
+        gl_feat1, feat_segmen, _ = self.encoder(x)
+        return gl_feat1, feat_segmen
+
+    def global_features(self, pc):
+        """
+        Global feature of a cloud, used for the Barlow Twins loss.
+
+        :param pc: torch.Tensor [batch, n_points, dims]
+        """
+        return self.encoder(pc)[0]
+
+    def shared_step(self, batch):
+        """
+        Build two augmented views of each cloud and return their Barlow Twins loss.
+
+        :param batch: tuple (pc torch.Tensor [batch, n_points, dims], labels, filenames)
+        :return: scalar torch.Tensor
+        """
+        pc, _, _ = batch  # [batch, n_points (~4500), dims], points in random order
+        # two views of the same cloud: its first and last VIEW_POINTS points. The views share most points but
+        # each one also has points the other lacks, so they look like two different subsamplings of the area.
+        pc_noise = pc.clone()
+        pc = pc[:, :VIEW_POINTS, :]
+        pc_noise = pc_noise[:, -VIEW_POINTS:, :]
+        # augmentations: move 2-5% (view 1) and 10% (view 2) of the points to random positions,
+        # then rotate each view by its own random angle around z
+        pc = self.add_noise(pc)
+        pc_noise = self.add_noise(pc_noise, ratio=0.1)
+        pc[:, :, :3] = torch_rotate_point_cloud_z(pc[:, :, :3])
+        pc_noise[:, :, :3] = torch_rotate_point_cloud_z(pc_noise[:, :, :3])
+
+        # embeddings [batch, z_dim] of both views; the loss pushes them to agree
+        z1 = self.projection_head(self.global_features(pc))
+        z2 = self.projection_head(self.global_features(pc_noise))
+
+        return self.loss_fn(z1, z2)
+
+    def training_step(self, batch, batch_idx):
+        """
+        Lightning training step; logs train_loss.
+
+        :param batch: tuple, see `shared_step`
+        :param batch_idx: int
+        """
+        loss = self.shared_step(batch)
+        self.log("train_loss", loss, on_step=True, on_epoch=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        """
+        Lightning validation step; logs val_loss.
+
+        :param batch: tuple, see `shared_step`
+        :param batch_idx: int
+        """
+        loss = self.shared_step(batch)
+        self.log("val_loss", loss, on_step=True, on_epoch=True)
+
+    def configure_optimizers(self):
+        """
+        Adam with a per-step linear warm-up.
+
+        :return: [optimizer], [scheduler dict]
+        """
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
+
+        warmup_steps = self.train_iters_per_epoch * self.warmup_epochs
+
+        # the scheduler is stepped after every batch (interval 'step'), not every epoch
+        scheduler = {
+            "scheduler": torch.optim.lr_scheduler.LambdaLR(
+                optimizer,
+                linear_warmup_decay(warmup_steps),
+            ),
+            "interval": "step",
+            "frequency": 1,
+        }
+
+        return [optimizer], [scheduler]
+
+    @staticmethod
+    def add_noise(pc, ratio=None):
+        """
+        Move a random subset of points of each point cloud to random positions.
+
+        :param pc: torch.Tensor [batch, n_points, dims], batch of point clouds (modified in place)
+        :param ratio: float or None, fraction of points to modify per point cloud (default: uniform in [0.02, 0.05])
+        """
+        if not ratio:
+            ratio = np.random.uniform(0.02, 0.05)
+        batch_size, n_points, _ = pc.shape
+        num_noise_points = int(n_points * ratio)
+        if num_noise_points == 0:
+            return pc
+
+        # per-cloud max height
+        height = pc[:, :, 2].amax(dim=1).view(-1, 1)
+
+        # different points for each cloud, sampled without replacement: the first indices of a random permutation
+        idx = torch.rand(batch_size, n_points, device=pc.device).argsort(dim=1)[:, :num_noise_points]
+
+        # uniform random values: x, y in [-1, 1], z in [0, height]
+        noise = torch.rand(batch_size, num_noise_points, 3, device=pc.device, dtype=pc.dtype)
+        noise[:, :, :2] = noise[:, :, :2] * 2 - 1
+        noise[:, :, 2] = noise[:, :, 2] * height
+
+        # write noise[b, k] into point idx[b, k] of cloud b (x, y, z only; the other features are kept)
+        idx = idx.unsqueeze(-1).expand(-1, -1, 3)
+        pc[:, :, :3] = pc[:, :, :3].scatter(1, idx, noise)
+
+        return pc
 
 
-# ---------------------------------------  LR SCHEDULE  ------------------------------------------------
+class BarlowTwinsPN2(BarlowTwins):
+    """Barlow Twins around the PointNet++ abstraction encoder (`PointNetAbstractionEncoder` with is_barlow=True)."""
 
-def _warmup_factor(warmup_steps, step):
-    """
-    Learning-rate multiplier: step / warmup_steps during warm-up, then 1.
+    def __init__(self, encoder, encoder_out_dim, num_training_samples, batch_size, lambda_coeff=5e-3, z_dim=128,
+                 learning_rate=1e-4, warmup_epochs=10, num_classes=6, hidden_dim=512):
+        """
+        Same arguments as `BarlowTwins`; the online probe is a cloud-level classifier.
 
-    :param warmup_steps: int
-    :param step: int, current optimizer step
-    :return: float
-    """
-    if step < warmup_steps:
-        return float(step) / float(max(1, warmup_steps))
-    return 1.0
+        :param encoder: nn.Module, `PointNetAbstractionEncoder` with is_barlow=True
+        :param encoder_out_dim: int, size of the global feature (512)
+        :param num_training_samples: int, training set size
+        :param batch_size: int
+        :param lambda_coeff: float, weight of the off-diagonal term
+        :param z_dim: int, projection head output size
+        :param learning_rate: float
+        :param warmup_epochs: int
+        :param num_classes: int, classes of the online probe
+        :param hidden_dim: int, projection head hidden size
+        """
+        super().__init__(encoder, encoder_out_dim, num_training_samples, batch_size, lambda_coeff=lambda_coeff,
+                         z_dim=z_dim, learning_rate=learning_rate, warmup_epochs=warmup_epochs,
+                         num_classes=num_classes, hidden_projector=hidden_dim)
+        # replaces the per-point probe built by BarlowTwins: PointNet++ only gives a global feature
+        self.online_finetuner = classification_probe(encoder_out_dim, num_classes)
 
+    def forward(self, x):
+        """
+        :param x: torch.Tensor [batch, n_points, dims]
+        :return: global feature [batch, encoder_out_dim]
+        """
+        return self.global_features(x)
 
-def linear_warmup_decay(warmup_steps):
-    """
-    Linear warm-up over `warmup_steps`, then a constant learning rate.
+    def global_features(self, pc):
+        """
+        Global PointNet++ feature (the encoder expects channels first).
 
-    :param warmup_steps: int
-    :return: callable step -> float, for `LambdaLR`
-    """
-    return partial(_warmup_factor, warmup_steps)
+        :param pc: torch.Tensor [batch, n_points, dims]
+        """
+        return self.encoder(pc.transpose(2, 1))

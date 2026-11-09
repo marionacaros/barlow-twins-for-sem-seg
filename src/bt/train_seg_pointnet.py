@@ -20,9 +20,46 @@ from src.utils.train_utils import (get_device, load_checkpoint, make_generator, 
                                    seed_worker, set_seed, split_by_block, timestamp)
 from src.utils.utils import rotate_point_cloud_z, save_checkpoint
 
-logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
-                    level=logging.INFO,
-                    datefmt='%Y-%m-%d %H:%M:%S')
+def train_loop(data, optimizer, ce_loss, pointnet, device, train=True):
+    """
+    One forward (and backward when `train`) pass.
+
+    :param data: tuple (pc torch.Tensor [batch, n_points, dims], targets LongTensor [batch, n_points], filenames)
+    :param optimizer: torch.optim.Optimizer
+    :param ce_loss: torch.nn.CrossEntropyLoss
+    :param pointnet: SegmentationPointNet
+    :param device: str, 'cuda' or 'cpu'
+    :param train: bool, train mode and optimizer step
+    :return: metrics dict, targets [batch, n_points] (cpu), predictions [batch, n_points] (cpu)
+    """
+    metrics = {}
+    pc, targets, filenames = data
+    # random z rotation (applied to validation batches too, as in the original experiments)
+    pc = pc.numpy()
+    pc[:, :, :3] = rotate_point_cloud_z(pc[:, :, :3])
+    pc = torch.from_numpy(pc)
+    pc, targets = pc.float().to(device), targets.to(device)  # [batch, n_points, dims], [batch, n_points]
+
+    optimizer.zero_grad()
+    pointnet.train(train)
+
+    logits, feat_transform = pointnet(pc)
+    metrics['ce_loss'] = ce_loss(logits, targets)
+
+    preds = F.log_softmax(logits.detach(), dim=1).argmax(1).cpu()
+
+    # feature-transform orthogonality regularizer
+    identity = torch.eye(feat_transform.shape[-1], device=device)
+    metrics['reg_loss'] = torch.norm(identity - torch.bmm(feat_transform, feat_transform.transpose(2, 1)))
+
+    if train:
+        metrics['loss'] = metrics['ce_loss'] + 0.001 * metrics['reg_loss']
+        metrics['loss'].backward()
+        optimizer.step()
+    else:
+        metrics['loss'] = metrics['ce_loss']
+
+    return metrics, targets.cpu(), preds
 
 
 def train(dataset,
@@ -35,7 +72,6 @@ def train(dataset,
           learning_rate,
           number_of_workers,
           model_checkpoint,
-          c_sample,
           val_fraction,
           seed,
           checkpoint_dir,
@@ -56,7 +92,6 @@ def train(dataset,
     :param learning_rate: float
     :param number_of_workers: int, DataLoader workers
     :param model_checkpoint: str, Barlow Twins .ckpt ('' to train from scratch)
-    :param c_sample: bool, constrained sampling (cat3 only)
     :param val_fraction: float, share of labeled files used for validation (split by block)
     :param seed: int
     :param checkpoint_dir: str, folder for checkpoints
@@ -84,8 +119,8 @@ def train(dataset,
     writer_val = SummaryWriter(os.path.join(log_dir, f'seg_{run_time}_val{name}'))
     logging.info(f"Tensorboard runs: {writer_train.get_logdir()}")
 
-    train_dataset = make_dataset(dataset, dataset_folder, train_files, n_points, c_sample=c_sample)
-    val_dataset = make_dataset(dataset, dataset_folder, val_files, n_points, c_sample=c_sample)
+    train_dataset = make_dataset(dataset, dataset_folder, train_files, n_points)
+    val_dataset = make_dataset(dataset, dataset_folder, val_files, n_points)
 
     train_dataloader = torch.utils.data.DataLoader(train_dataset,
                                                    batch_size=batch_size,
@@ -193,49 +228,12 @@ def train(dataset,
     print("--- TOTAL TIME: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
 
 
-def train_loop(data, optimizer, ce_loss, pointnet, device, train=True):
+def parse_args():
     """
-    One forward (and backward when `train`) pass.
+    Parse the command line.
 
-    :param data: tuple (pc torch.Tensor [batch, n_points, dims], targets LongTensor [batch, n_points], filenames)
-    :param optimizer: torch.optim.Optimizer
-    :param ce_loss: torch.nn.CrossEntropyLoss
-    :param pointnet: SegmentationPointNet
-    :param device: str, 'cuda' or 'cpu'
-    :param train: bool, train mode and optimizer step
-    :return: metrics dict, targets [batch, n_points] (cpu), predictions [batch, n_points] (cpu)
+    :return: argparse.Namespace
     """
-    metrics = {}
-    pc, targets, filenames = data
-    # random z rotation (applied to validation batches too, as in the original experiments)
-    pc = pc.numpy()
-    pc[:, :, :3] = rotate_point_cloud_z(pc[:, :, :3])
-    pc = torch.from_numpy(pc)
-    pc, targets = pc.float().to(device), targets.to(device)  # [batch, n_points, dims], [batch, n_points]
-
-    optimizer.zero_grad()
-    pointnet.train(train)
-
-    logits, feat_transform = pointnet(pc)
-    metrics['ce_loss'] = ce_loss(logits, targets)
-
-    preds = F.log_softmax(logits.detach(), dim=1).argmax(1).cpu()
-
-    # feature-transform orthogonality regularizer
-    identity = torch.eye(feat_transform.shape[-1], device=device)
-    metrics['reg_loss'] = torch.norm(identity - torch.bmm(feat_transform, feat_transform.transpose(2, 1)))
-
-    if train:
-        metrics['loss'] = metrics['ce_loss'] + 0.001 * metrics['reg_loss']
-        metrics['loss'].backward()
-        optimizer.step()
-    else:
-        metrics['loss'] = metrics['ce_loss']
-
-    return metrics, targets.cpu(), preds
-
-
-if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='cat3', help='dataset')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
@@ -251,17 +249,27 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=None, help='number of epochs (default: 100 cat3, 150 dales)')
     parser.add_argument('--learning_rate', type=float, default=0.001, help='learning rate')
     parser.add_argument('--number_of_workers', type=int, default=16, help='number of workers for the dataloader')
-    parser.add_argument('--model_checkpoint', type=str, default='', help='Barlow Twins (.ckpt) checkpoint to start from')
-    parser.add_argument('--c_sample', action='store_true', help='use constrained sampling (cat3 only)')
+    parser.add_argument('--model_checkpoint', type=str, default='',
+                        help='Barlow Twins (.ckpt) checkpoint to start from')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--checkpoint_dir', type=str, default='src/checkpoints', help='where to save checkpoints')
     parser.add_argument('--log_dir', type=str, default='src/runs/bt', help='TensorBoard log folder')
     parser.add_argument('--save_after_epoch', type=int, default=-1,
                         help='also save a checkpoint every epoch after this one (-1: only the best val loss)')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
-    args = parser.parse_args()
-    config = DATASETS[args.dataset]
+    return parser.parse_args()
 
+
+def main(args):
+    """
+    Fine-tune PointNet with the command-line settings; dataset-dependent defaults come from DATASETS.
+
+    :param args: argparse.Namespace from `parse_args`
+    """
+    logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
+                        level=logging.INFO,
+                        datefmt='%Y-%m-%d %H:%M:%S')
+    config = DATASETS[args.dataset]
     train(dataset=args.dataset,
           dataset_folder=args.dataset_folder,
           path_list_files=args.path_list_files or config['path_list_files'],
@@ -272,10 +280,13 @@ if __name__ == '__main__':
           learning_rate=args.learning_rate,
           number_of_workers=args.number_of_workers,
           model_checkpoint=args.model_checkpoint,
-          c_sample=args.c_sample,
           val_fraction=args.val_fraction,
           seed=args.seed,
           checkpoint_dir=args.checkpoint_dir,
           log_dir=args.log_dir,
           save_after_epoch=args.save_after_epoch,
           device=get_device(args.device))
+
+
+if __name__ == '__main__':
+    main(parse_args())

@@ -89,7 +89,12 @@ def test(dataset,
                         checkpoint['number_of_points'], os.path.join(output_folder, f'IoU-results-{dataset}.csv'))
 
 
-if __name__ == '__main__':
+def parse_args():
+    """
+    Parse the command line.
+
+    :return: argparse.Namespace
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='cat3', help='dataset')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
@@ -101,8 +106,15 @@ if __name__ == '__main__':
     parser.add_argument('--plot', action='store_true', help='save a prediction plot per test window')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def main(args):
+    """
+    Evaluate a fine-tuned PointNet with the command-line settings.
+
+    :param args: argparse.Namespace from `parse_args`
+    """
     logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
                         level=logging.INFO,
                         datefmt='%Y-%m-%d %H:%M:%S')
@@ -115,3 +127,7 @@ if __name__ == '__main__':
          args.path_list_files or DATASETS[args.dataset]['path_list_files'],
          get_device(args.device),
          args.plot)
+
+
+if __name__ == '__main__':
+    main(parse_args())

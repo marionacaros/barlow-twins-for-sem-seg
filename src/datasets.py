@@ -38,6 +38,7 @@ def resample(pc, number_of_points):
     if pc.shape[0] > number_of_points:
         pc = pc[np.random.choice(pc.shape[0], number_of_points, replace=False), :]
     elif pc.shape[0] < number_of_points:
+        # too few points: append randomly chosen copies of existing points
         extra = np.random.randint(0, pc.shape[0], number_of_points - pc.shape[0])
         pc = np.concatenate([pc, pc[extra, :]], axis=0)
     return pc
@@ -50,17 +51,15 @@ class BarlowTwinsDataset(data.Dataset):
     LiDAR-CAT3 windows stored as [n_points, dims] tensors.
 
     Stored columns: 0-2 x, y, z | 3 classification | 4 intensity | 5-7 R, G, B | 8 NIR | 9 NDVI |
-    10 height above ground | 11 constrained-sampling flag.
+    10 height above ground (older files also have an unused column 11).
     Returned features (9): x, y (normalized to [-1, 1]), height above ground / 2 (clipped to [0, 1]), columns 4-9.
     """
-    POINT_DIMENSION = 3
 
     def __init__(self, dataset_folder,
                  task='classification',
                  number_of_points=None,
                  files=None,
                  fixed_num_points=True,
-                 c_sample=False,
                  use_ground=False):
         """
         :param dataset_folder: str, folder with the .pt windows
@@ -68,7 +67,6 @@ class BarlowTwinsDataset(data.Dataset):
         :param number_of_points: int or None, points per window when fixed_num_points
         :param files: list of str, window file names relative to dataset_folder
         :param fixed_num_points: bool, resample every window to number_of_points
-        :param c_sample: bool, keep only the points flagged for constrained sampling
         :param use_ground: bool, keep ground points
         """
         self.dataset_folder = dataset_folder
@@ -77,7 +75,6 @@ class BarlowTwinsDataset(data.Dataset):
         self.n_points = number_of_points
         self.files = files
         self.fixed_num_points = fixed_num_points
-        self.constrained_sampling = c_sample
         self.paths_files = [os.path.join(self.dataset_folder, f) for f in self.files]
 
     def __len__(self):
@@ -93,12 +90,12 @@ class BarlowTwinsDataset(data.Dataset):
         pc = self.prepare_data(filename,
                                self.n_points,
                                fixed_num_points=self.fixed_num_points,
-                               constrained_sample=self.constrained_sampling,
                                ground=self.use_ground)
         if self.task == 'segmentation':
             labels = self.get_labels_segmen(pc)
         else:
             labels = self.get_labels_classification(pc)
+        # keep x, y, z and columns 4-9: drops the class (3) and height above ground (10, already copied into z)
         pc = np.concatenate((pc[:, :3], pc[:, 4:10]), axis=1)
 
         return pc, labels, filename
@@ -107,7 +104,6 @@ class BarlowTwinsDataset(data.Dataset):
     def prepare_data(point_file,
                      number_of_points=None,
                      fixed_num_points=True,
-                     constrained_sample=False,
                      ground=True):
         """
         Load a window, drop unclassified (and optionally ground) points, resample it and normalize x/y to [-1, 1].
@@ -116,12 +112,12 @@ class BarlowTwinsDataset(data.Dataset):
         :param point_file: str, path of the .pt window
         :param number_of_points: int or None, target number of points (used when fixed_num_points)
         :param fixed_num_points: bool, resample to number_of_points
-        :param constrained_sample: bool, keep only points with the sampling flag (column 11)
         :param ground: bool, keep ground points (classes 2, 8, 13)
-        :return: torch.Tensor [n_points, 12]
+        :return: torch.Tensor [n_points, stored columns]
         """
         with open(point_file, 'rb') as f:
-            pc = torch.load(f, map_location='cpu', weights_only=True).numpy()  # [points, dims]
+            # older windows are float32, new ones float64 (see proc/cat3_data/2_preprocessing.py)
+            pc = torch.load(f, map_location='cpu', weights_only=True).numpy().astype(np.float64)  # [points, dims]
 
         # remove not classified points
         pc = pc[pc[:, 3] != 1]
@@ -132,20 +128,15 @@ class BarlowTwinsDataset(data.Dataset):
             pc = pc[pc[:, 3] != 8]
             pc = pc[pc[:, 3] != 13]
 
-        # constrained sampling: keep only the points flagged for sampling
-        if constrained_sample:
-            pc = pc[pc[:, 11] == 1]
-
         if fixed_num_points:
             pc = resample(pc, number_of_points)
 
-        # normalize axes between -1 and 1
         pc = normalize_xy(pc)
-        # Z normalization up to 50 m
-        pc[:, 2] = pc[:, 10] / 2  # HAG
-        pc[:, 2] = np.clip(pc[:, 2], 0.0, 1.0)
+        # replace the absolute z by the height above ground (column 10, already divided by max_z in preprocessing)
+        pc[:, 2] = np.clip(pc[:, 10] / 2, 0.0, 1.0)
 
-        return torch.from_numpy(pc)
+        # float64 windows keep cm-precise UTM coordinates until x, y are normalized; the model works in float32
+        return torch.from_numpy(pc.astype(np.float32))
 
     @staticmethod
     def get_labels_segmen(pointcloud):
@@ -163,6 +154,8 @@ class BarlowTwinsDataset(data.Dataset):
         """
         segment_labels = pointcloud[:, 3]
 
+        # raw codes are first moved to multiples of 100, so a new label never collides with a raw code that is
+        # still to be remapped; dividing by 100 at the end gives labels 0-5
         segment_labels[segment_labels == 15] = 100  # pylon
         segment_labels[segment_labels == 14] = 200  # lines
         segment_labels[segment_labels == 18] = 100  # other pylons
@@ -191,6 +184,7 @@ class BarlowTwinsDataset(data.Dataset):
         :param pointcloud: torch.Tensor [n_points, dim], raw classes in column 3
         :return: int
         """
+        # the first matching group wins: a window with lines and buildings is labeled 1
         present = set(np.unique(pointcloud[:, 3].cpu().numpy().astype(int)).tolist())
         if present & {14, 15, 18}:
             return 1
@@ -208,7 +202,20 @@ class DalesDataset(data.Dataset):
     Stored columns: 0-2 x, y, z | 3 classification | 4 return number | 5 number of returns.
     Returned features (5): x, y (normalized to [-1, 1]), z / 200, return number / 7, number of returns / 7.
     """
-    POINT_DIMENSION = 3
+
+    # raw DALES code -> segmentation label (index = raw code): the 8 DALES classes keep their order,
+    # raw 0 (unknown) is ignored (-1) by the loss and the metrics
+    LABEL_MAP = torch.tensor([
+        -1,  # 0 unknown
+        0,   # 1 ground
+        1,   # 2 vegetation
+        2,   # 3 cars
+        3,   # 4 trucks
+        4,   # 5 power lines
+        5,   # 6 fences
+        6,   # 7 poles
+        7,   # 8 buildings
+    ])
 
     def __init__(self,
                  dataset_folder,
@@ -244,6 +251,7 @@ class DalesDataset(data.Dataset):
                                fixed_num_points=self.fixed_num_points)
 
         labels = self.get_labels(pc)
+        # drop the class column (3)
         pc = torch.cat((pc[:, :3], pc[:, 4:6]), dim=1)
 
         return pc, labels, filename
@@ -277,20 +285,6 @@ class DalesDataset(data.Dataset):
 
         return torch.from_numpy(pc.astype(np.float32))
 
-    # raw DALES code -> segmentation label (index = raw code): the 8 DALES classes keep their order,
-    # raw 0 (unknown) is ignored (-1) by the loss and the metrics
-    LABEL_MAP = torch.tensor([
-        -1,  # 0 unknown
-        0,   # 1 ground
-        1,   # 2 vegetation
-        2,   # 3 cars
-        3,   # 4 trucks
-        4,   # 5 power lines
-        5,   # 6 fences
-        6,   # 7 poles
-        7,   # 8 buildings
-    ])
-
     @staticmethod
     def get_labels(pc):
         """
@@ -308,6 +302,7 @@ class DalesDataset(data.Dataset):
         :param pc: torch.Tensor or np.ndarray [n_points, dim], raw DALES classes in column 3
         :return labels: LongTensor [n_points]
         """
+        # index the lookup table with the raw codes
         return DalesDataset.LABEL_MAP[torch.as_tensor(pc[:, 3]).long()]
 
 
@@ -324,13 +319,12 @@ DATASETS = {
         'ssl_list': 'train_reduced_files_semdedup0996.txt',
         'ssl_add_labeled': False,
         'ssl_number_of_points': 4500,
-        'ssl_max_epochs': 120,
+        'ssl_max_epochs': 300,
         # fine-tuning; double weight on classes with < 1% of the points
         'class_weights': [2, 2, 2, 1, 1, 1],
         'milestones': [50, 150],
         'batch_size': 32,
         'epochs': 100,
-        'supports_c_sample': True,
     },
     'dales': {
         'dataset_class': DalesDataset,
@@ -349,12 +343,11 @@ DATASETS = {
         'milestones': [50, 300],
         'batch_size': 16,
         'epochs': 150,
-        'supports_c_sample': False,
     },
 }
 
 
-def make_dataset(name, dataset_folder, files, number_of_points, fixed_num_points=True, c_sample=False,
+def make_dataset(name, dataset_folder, files, number_of_points, fixed_num_points=True,
                  task='segmentation'):
     """
     Build the dataset class registered under `name` in DATASETS.
@@ -364,15 +357,9 @@ def make_dataset(name, dataset_folder, files, number_of_points, fixed_num_points
     :param files: list of str, window file names
     :param number_of_points: int or None, points per window
     :param fixed_num_points: bool, resample every window to number_of_points
-    :param c_sample: bool, constrained sampling (raises ValueError if the dataset does not support it)
     :param task: str, 'segmentation' or 'classification'
     :return: BarlowTwinsDataset or DalesDataset
     """
     config = DATASETS[name]
-    kwargs = dict(dataset_folder=dataset_folder, task=task, number_of_points=number_of_points,
-                  files=files, fixed_num_points=fixed_num_points)
-    if c_sample:
-        if not config['supports_c_sample']:
-            raise ValueError(f'constrained sampling is not available for {name}')
-        kwargs['c_sample'] = True
-    return config['dataset_class'](**kwargs)
+    return config['dataset_class'](dataset_folder=dataset_folder, task=task, number_of_points=number_of_points,
+                                   files=files, fixed_num_points=fixed_num_points)

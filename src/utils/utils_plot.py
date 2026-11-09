@@ -1,3 +1,4 @@
+"""Plots of per-point predictions against ground truth, used by the test scripts."""
 import os
 
 import matplotlib

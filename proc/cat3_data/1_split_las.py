@@ -1,191 +1,195 @@
+"""
+Tile raw LiDAR-CAT3 LAS files into square windows (default 40 x 40 m, 5 m overlap).
+
+Each window is written to <out_path>/<dataset>/pointclouds_w<x>x<y>/ as a LAS file plus a <name>_NIR.pkl file,
+because the LAS point format used here (3, needed by PDAL) has no NIR field.
+Coordinates are stored with 1 cm resolution (LAS scale 0.01).
+"""
 import argparse
 import glob
 import logging
+import multiprocessing
 import os
+import pickle
+from functools import partial
 
 import laspy
 import numpy as np
 from progressbar import progressbar
-from alive_progress import alive_bar
-import hashlib
-import pickle
-import multiprocessing
-
-logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
-                    level=logging.INFO,
-                    datefmt='%Y-%m-%d %H:%M:%S')
 
 NUM_CPUS = 20
+OVERLAP = 5  # metres shared by neighbouring windows
+SCALE = 0.01  # LAS coordinate resolution in metres (1 cm)
+
+# Point format 3 stores the classification in 5 bits, so only codes 0-31 fit. The ICGC codes above 31 are all
+# sensor noise; they are stored as 30/31, which 2_preprocessing.py removes together with the other noise classes.
+MAX_LAS_CLASS = 31
+HIGH_CLASS_MAP = {135: 30, 104: 31, 106: 31}
 
 
-def read_las_files(path):
+def map_classes(classes):
     """
-    Read every LAS file in a folder.
+    Map ICGC class codes to codes that fit the 5-bit classification field of LAS point format 3.
 
-    :param path: str, folder containing LAS files
-    :return: dict {file name: np.ndarray [4, n_points] (x, y, z, class)}
+    Codes 0-31 are kept, the known codes above 31 (all noise) follow HIGH_CLASS_MAP and any other code above 31
+    is logged and stored as 31 (noise).
+
+    :param classes: np.ndarray [n_points], raw class codes (any numeric dtype)
+    :return: np.ndarray [n_points] uint8
     """
-    dict_pc = {}
-    files = glob.glob(os.path.join(path, '*.las'))
-    with alive_bar(len(files), bar='bubbles', spinner='notes2') as bar:
-        for f in files:
-            fileName = f.split('/')[-1].split('.')[0]
-            las_pc = laspy.read(f)
-            dict_pc[fileName] = np.vstack((las_pc.x, las_pc.y, las_pc.z, las_pc.classification))
-            bar()
+    classes = np.asarray(classes).astype(np.int64)  # wide type first: casting 135 to int8 would wrap it to -121
+    out = classes.copy()
+    for code, new_code in HIGH_CLASS_MAP.items():
+        out[classes == code] = new_code
+    unknown = np.setdiff1d(classes[classes > MAX_LAS_CLASS], list(HIGH_CLASS_MAP))
+    if unknown.size:
+        logging.warning(f'Class codes {unknown.tolist()} do not fit LAS point format 3; stored as {MAX_LAS_CLASS}')
+        out[np.isin(classes, unknown)] = MAX_LAS_CLASS
+    return out.astype(np.uint8)
 
-    return dict_pc
 
-
-def store_las_file_from_pc(pc, fileName, path_las_dir, dataset):
+def nir_key(x, y, z):
     """
-    Write a window to <path_las_dir>/<fileName>.las and, unless `dataset` is 'BDN', its NIR values to
-    <fileName>_NIR.pkl (keyed by the md5 hash of 'x_y_z').
+    Lookup key of a point in the NIR dictionary: its coordinates rounded to whole centimetres.
 
-    :param pc: np.ndarray [9, n_points] (x, y, z, class, intensity, R, G, B, NIR)
+    1_split_las.py and 2_preprocessing.py must build the key the same way. Rounding to the 1 cm LAS grid makes the
+    key independent of the LAS offsets and scale PDAL writes, as long as it keeps 1 cm precision.
+
+    :param x: np.ndarray [n_points] float, coordinates in metres
+    :param y: np.ndarray [n_points] float
+    :param z: np.ndarray [n_points] float
+    :return: list of (int, int, int) tuples
+    """
+    cm = [np.round(np.asarray(c, dtype=np.float64) / SCALE).astype(np.int64) for c in (x, y, z)]
+    return list(zip(*(c.tolist() for c in cm)))
+
+
+def store_las_file_from_pc(pc, fileName, path_las_dir):
+    """
+    Write a window to <path_las_dir>/<fileName>.las and its NIR values to <fileName>_NIR.pkl
+    (a dict keyed by `nir_key`).
+
+    :param pc: np.ndarray [9, n_points] float64 (x, y, z, class, intensity, R, G, B, NIR)
     :param fileName: str, output file name without extension
     :param path_las_dir: str, output folder
-    :param dataset: str, dataset name
     """
-    # 1. Create a new header
-    header = laspy.LasHeader(point_format=3, version="1.4")  # we need this format for processing with PDAL
-    # header.add_extra_dim(laspy.ExtraBytesParams(name="nir_extra", type=np.int32))
-    header.offsets = np.array([0, 0, 0])  # np.min(pc, axis=0)
-    header.scales = np.array([1, 1, 1])
+    # point format 3 is required by the PDAL step (HeightAboveGround) that runs before 2_preprocessing.py.
+    # Scale 0.01 keeps 1 cm resolution; the offsets (window minimum, floored to whole metres) keep the
+    # stored integers small.
+    header = laspy.LasHeader(point_format=3, version="1.4")
+    header.offsets = np.floor(pc[:3].min(axis=1))
+    header.scales = np.array([SCALE, SCALE, SCALE])
 
-    # 2. Create a Las
     las = laspy.LasData(header)
-    las.x = pc[0].astype(np.int32)
-    las.y = pc[1].astype(np.int32)
-    las.z = pc[2].astype(np.int32)
-    p_class = pc[3].astype(np.int8)
-    las.intensity = pc[4].astype(np.int16)
-    las.red = pc[5].astype(np.int16)
-    las.green = pc[6].astype(np.int16)
-    las.blue = pc[7].astype(np.int16)
-    # las.return_number = pc[5].astype(np.int8)
-    # las.number_of_returns = pc[6].astype(np.int8)
+    las.x = pc[0]
+    las.y = pc[1]
+    las.z = pc[2]
+    las.classification = map_classes(pc[3])
+    # intensity and colours are 16-bit unsigned in LAS: int16 would wrap values above 32767
+    las.intensity = pc[4].astype(np.uint16)
+    las.red = pc[5].astype(np.uint16)
+    las.green = pc[6].astype(np.uint16)
+    las.blue = pc[7].astype(np.uint16)
 
-    # Classification unsigned char 1 byte (max is 31)
-    p_class[p_class == 135] = 30
-    p_class[p_class == 106] = 31
-    las.classification = p_class
-
-    if not os.path.exists(path_las_dir):
-        os.makedirs(path_las_dir)
+    os.makedirs(path_las_dir, exist_ok=True)
     las.write(os.path.join(path_las_dir, fileName + ".las"))
 
-    if dataset != 'BDN':  # BDN data do not have NIR
-        # Store NIR with hash ID
-        nir = {}
-        for i in range(pc.shape[1]):
-            mystring = str(int(pc[0, i])) + '_' + str(int(pc[1, i])) + '_' + str(int(pc[2, i]))
-            hash_object = hashlib.md5(mystring.encode())
-            nir[hash_object.hexdigest()] = int(pc[8, i])
+    # NIR cannot be stored in point format 3, so keep it in a dict keyed by the centimetre coordinates;
+    # 2_preprocessing.py rebuilds the same key for every point to look its NIR value up. Two points at the same
+    # centimetre share one entry (the last one wins).
+    nir = dict(zip(nir_key(las.x, las.y, las.z), pc[8].astype(np.int64).tolist()))
 
-        with open(os.path.join(path_las_dir, fileName + '_NIR.pkl'), 'wb') as f:
-            pickle.dump(nir, f)
+    with open(os.path.join(path_las_dir, fileName + '_NIR.pkl'), 'wb') as f:
+        pickle.dump(nir, f)
 
 
-def get_all_windows(path):
+def split_pointcloud(f, out_dir, w_size, dataset):
     """
-    Split all LAS files of a folder into windows in parallel (uses the globals W_SIZE and SAVE_PATH).
+    Split a LAS tile into `w_size` windows with OVERLAP metres of overlap and store each one with
+    `store_las_file_from_pc`.
 
-    :param path: str, folder where LAS files are stored
+    :param f: str, path of the LAS file
+    :param out_dir: str, output folder of the windows
+    :param w_size: sequence of 2 ints, (x, y) window size in metres
+    :param dataset: str, dataset name used in the window file names
     """
-    logging.info('Loading LAS files')
-    files = glob.glob(os.path.join(path, '*.las'))
+    f_name = os.path.splitext(os.path.basename(f))[0]
 
-    dir_name = 'pointclouds_w' + str(W_SIZE[0]) + 'x' + str(W_SIZE[1])
-    if not os.path.exists(os.path.join(SAVE_PATH, dir_name)):
-        os.makedirs(os.path.join(SAVE_PATH, dir_name))
+    las_pc = laspy.read(f)
+    coords = np.vstack((las_pc.x, las_pc.y, las_pc.z, las_pc.classification, las_pc.intensity,
+                        las_pc.red, las_pc.green, las_pc.blue, las_pc.nir))  # [9, n_points]
+    x_min, y_min = coords[0].min(), coords[1].min()
+    x_max, y_max = coords[0].max(), coords[1].max()
 
-    # Multiprocessing
-    parallel_proc(files, num_cpus=NUM_CPUS)
+    # slide a w_size window over the tile with a stride of w_size - OVERLAP
+    i_w = 0
+    for y in range(round(y_min), round(y_max), w_size[1] - OVERLAP):
+        in_y = np.logical_and(coords[1] < (y + w_size[1]), coords[1] > y)
+
+        for x in range(round(x_min), round(x_max), w_size[0] - OVERLAP):
+            in_x = np.logical_and(coords[0] < (x + w_size[0]), coords[0] > x)
+            in_window = np.logical_and(in_x, in_y)
+            i_w += 1
+
+            if in_window.any():
+                file = 'pc_' + dataset + '_' + f_name + '_w' + str(i_w)
+                store_las_file_from_pc(coords[:, in_window], file, out_dir)
+                # second increment kept on purpose: existing windows were numbered this way
+                i_w += 1
+
+    # log the number of windows per block
+    with open('pointclouds_per_block_' + dataset + '.txt', 'a') as log_file:
+        log_file.write(f'{f_name}, {i_w}\n')
 
 
-def parallel_proc(files_list, num_cpus):
+def parallel_proc(files_list, out_dir, w_size, dataset, num_cpus):
     """
     Run `split_pointcloud` on every file with a multiprocessing pool.
 
     :param files_list: list of str, LAS file paths
+    :param out_dir: str, output folder of the windows
+    :param w_size: sequence of 2 ints, (x, y) window size in metres
+    :param dataset: str, dataset name used in the window file names
     :param num_cpus: int, number of processes
     """
-    p = multiprocessing.Pool(processes=num_cpus)
-
-    for _ in progressbar(p.imap_unordered(split_pointcloud, files_list, 1),
-                         max_value=len(files_list)):  # redirect_stdout=True)
-        pass
-    p.close()
-    p.join()
+    worker = partial(split_pointcloud, out_dir=out_dir, w_size=w_size, dataset=dataset)
+    with multiprocessing.Pool(processes=num_cpus) as p:
+        for _ in progressbar(p.imap_unordered(worker, files_list, 1), max_value=len(files_list)):
+            pass
 
 
-def split_pointcloud(f):
+def parse_args():
     """
-    Split a LAS tile into W_SIZE windows with 5 m overlap and store each one with `store_las_file_from_pc`.
+    Parse the command line.
 
-    :param f: str, path of the LAS file
+    :return: argparse.Namespace
     """
-    dir_name = 'all_w' + str(W_SIZE[0]) + 'x' + str(W_SIZE[1])
-    f_name = f.split('/')[-1].split('.')[0]
-
-    las_pc = laspy.read(f)
-    nir = las_pc.nir
-    red = las_pc.red
-    green = las_pc.green
-    blue = las_pc.blue
-
-    coords = np.vstack((las_pc.x, las_pc.y, las_pc.z, las_pc.classification,
-                        las_pc.intensity,
-                        red, green, blue,
-                        nir))
-    i_w = 0
-    x_min, y_min, z_min = coords[0].min(), coords[1].min(), coords[2].min()
-    x_max, y_max, z_max = coords[0].max(), coords[1].max(), coords[2].max()
-
-    for y in range(round(y_min), round(y_max), W_SIZE[1]-5):  # 5 meters overlap
-        bool_w_y = np.logical_and(coords[1] < (y + W_SIZE[1]), coords[1] > y)
-
-        for x in range(round(x_min), round(x_max), W_SIZE[0]-5):
-            bool_w_x = np.logical_and(coords[0] < (x + W_SIZE[0]), coords[0] > x)
-            bool_w = np.logical_and(bool_w_x, bool_w_y)
-            i_w += 1
-
-            if any(bool_w):
-                if coords[:, bool_w].shape[1] > 0:
-                    pc = coords[:, bool_w]
-                    # store las file
-                    path_las_dir = os.path.join(SAVE_PATH, dir_name)
-                    file = 'pc_' + dataset_name + '_' + f_name + '_w' + str(i_w)
-                    store_las_file_from_pc(pc, file, path_las_dir, DATASET)
-                    i_w += 1
-
-    f = open('pointclouds_per_block_' + str(DATASET) + '.txt', 'a')
-    f.write(f'{f_name}, {i_w}\n')
-    f.close()
-
-
-if __name__ == '__main__':
-
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--out_path', type=str, required=True,
                         help='output folder where processed files are stored')
     parser.add_argument('--datasets', nargs='+', default=['cat3_data', 'RIBERA'], help='datasets names')
     parser.add_argument('--LAS_files_path', type=str, required=True,
                         help='folder with one sub-folder of raw LAS files per dataset (<LAS_files_path>/<dataset>)')
     parser.add_argument('--w_size', type=int, nargs=2, default=[40, 40], help='window size in metres (x y)')
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    W_SIZE = args.w_size
-    LAS_files_path = args.LAS_files_path
 
-    if args.datasets:
-        # Our Datasets
-        for dataset_name in args.datasets:
-            DATASET = dataset_name
-            LAS_files_path = os.path.join(args.LAS_files_path, dataset_name)
+def main(args):
+    """
+    Split the LAS files of every dataset into windows.
 
-            SAVE_PATH = os.path.join(args.out_path, dataset_name)
+    :param args: argparse.Namespace from `parse_args`
+    """
+    logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
+                        level=logging.INFO,
+                        datefmt='%Y-%m-%d %H:%M:%S')
+    for dataset in args.datasets:
+        out_dir = os.path.join(args.out_path, dataset, f'pointclouds_w{args.w_size[0]}x{args.w_size[1]}')
+        os.makedirs(out_dir, exist_ok=True)
+        logging.info('Loading LAS files')
+        files = glob.glob(os.path.join(args.LAS_files_path, dataset, '*.las'))
+        parallel_proc(files, out_dir, args.w_size, dataset, num_cpus=NUM_CPUS)
 
-        get_all_windows(LAS_files_path)
 
+if __name__ == '__main__':
+    main(parse_args())

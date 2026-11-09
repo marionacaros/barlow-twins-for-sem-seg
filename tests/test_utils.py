@@ -1,7 +1,9 @@
+"""Tests for the segmentation metrics, block splitting and rotation helpers."""
 import math
 
-import numpy as np
+# import torch before numpy: some conda MKL builds of numpy need the OpenMP runtime torch loads
 import torch
+import numpy as np
 
 from src.utils.get_metrics import SegmentationMetrics
 from src.utils.train_utils import cat3_block_id, dales_block_id, split_by_block

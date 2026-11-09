@@ -1,19 +1,22 @@
+"""PointNet++ semantic segmentation network (encoder of 4 set-abstraction layers + 4 feature-propagation layers)."""
 import torch.nn as nn
 import torch.nn.functional as F
-from src.models.pointnet2_utils import PointNetSetAbstraction, PointNetFeaturePropagation
+
+from src.models.pointnet2_utils import PointNetFeaturePropagation, PointNetSetAbstraction
 
 
 class PointNetAbstractionEncoder(nn.Module):
+    """Four PointNet++ set-abstraction layers."""
+
     def __init__(self, is_barlow=False, group_all=False):
         """
-        Four PointNet++ set-abstraction layers.
-
         :param is_barlow: bool, return only the last-level features, flattened to [batch, 512]
         :param group_all: bool, the last layer groups all points into one global feature
         """
-        super(PointNetAbstractionEncoder, self).__init__()
+        super().__init__()
 
         self.is_bt = is_barlow
+        # arguments: centroids, ball radius, points per ball, input channels (features + 3 for xyz), MLP channels
         self.sa1 = PointNetSetAbstraction(1024, 0.1, 32, 9 + 3, [32, 32, 64], False)
         self.sa2 = PointNetSetAbstraction(256, 0.2, 32, 64 + 3, [64, 64, 128], False)
         self.sa3 = PointNetSetAbstraction(64, 0.4, 32, 128 + 3, [128, 128, 256], False)
@@ -28,19 +31,17 @@ class PointNetAbstractionEncoder(nn.Module):
         l0_xyz = xyz[:, :3, :]
 
         l1_xyz, l1_points = self.sa1(l0_xyz, l0_points)  # [b, 3, 1024] [b, 64, 1024]
-        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)  # [b, 3 ,256] [b, 128, 256]
-        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)  # [b, 3, 64] [b, 526, 64]
-        l4_xyz, l4_points = self.sa4(l3_xyz, l3_points)  # [b, 3, 16] [b, 512, 16]
+        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)  # [b, 3, 256] [b, 128, 256]
+        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)  # [b, 3, 64] [b, 256, 64]
+        l4_xyz, l4_points = self.sa4(l3_xyz, l3_points)  # [b, 3, 16] [b, 512, 16] ([b, 512, 1] with group_all)
 
         if self.is_bt:
-            l4_points = l4_points.view(-1, 512)
-            return l4_points
-
-        else:
-            return l1_xyz, l1_points, l2_xyz, l2_points, l3_xyz, l3_points, l4_xyz, l4_points
+            return l4_points.view(-1, 512)
+        return l1_xyz, l1_points, l2_xyz, l2_points, l3_xyz, l3_points, l4_xyz, l4_points
 
 
 class PointNet2(nn.Module):
+    """PointNet++ semantic segmentation: set-abstraction encoder + feature-propagation decoder."""
 
     def __init__(self, num_classes, is_barlow=False, group_all=False):
         """
@@ -48,14 +49,15 @@ class PointNet2(nn.Module):
         :param is_barlow: bool, see `PointNetAbstractionEncoder`
         :param group_all: bool, see `PointNetAbstractionEncoder`
         """
-        super(PointNet2, self).__init__()
+        super().__init__()
 
         self.encoder = PointNetAbstractionEncoder(is_barlow=is_barlow, group_all=group_all)
 
-        self.fp4 = PointNetFeaturePropagation(768, [256, 256])
-        self.fp3 = PointNetFeaturePropagation(384, [256, 256])
-        self.fp2 = PointNetFeaturePropagation(320, [256, 128])
-        self.fp1 = PointNetFeaturePropagation(128, [128, 128, 128])
+        # input channels = skip features of the finer level + upsampled features of the coarser level
+        self.fp4 = PointNetFeaturePropagation(768, [256, 256])  # 256 + 512
+        self.fp3 = PointNetFeaturePropagation(384, [256, 256])  # 128 + 256
+        self.fp2 = PointNetFeaturePropagation(320, [256, 128])  # 64 + 256
+        self.fp1 = PointNetFeaturePropagation(128, [128, 128, 128])  # no skip features + 128
         self.conv1 = nn.Conv1d(128, 128, 1)
         self.bn1 = nn.BatchNorm1d(128)
         self.drop1 = nn.Dropout(0.5)
@@ -64,86 +66,17 @@ class PointNet2(nn.Module):
     def forward(self, pc):
         """
         :param pc: torch.Tensor [batch, 9, n_points]
-        :return: log-probabilities [batch, n_points, num_classes], level-4 features [batch, 512, 16]
+        :return: log-probabilities [batch, n_points, num_classes]
         """
         l0_xyz = pc[:, :3, :]
         l1_xyz, l1_points, l2_xyz, l2_points, l3_xyz, l3_points, l4_xyz, l4_points = self.encoder(pc)
 
-        l4_points = l4_points.view(-1, 512, 16)
+        # upsample the features level by level back to the input points
         l3_points = self.fp4(l3_xyz, l4_xyz, l3_points, l4_points)  # [b, 256, 64]
         l2_points = self.fp3(l2_xyz, l3_xyz, l2_points, l3_points)  # [b, 256, 256]
         l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)  # [b, 128, 1024]
-        l0_points = self.fp1(l0_xyz, l1_xyz, None, l1_points)  # [b, 128, 4096]
+        l0_points = self.fp1(l0_xyz, l1_xyz, None, l1_points)  # [b, 128, n_points]
 
-        x = self.drop1(F.relu(self.bn1(self.conv1(l0_points))))  # [b, 128, 4096]
-        x = self.conv2(x)  # [b, 6, 4096]
-        x = F.log_softmax(x, dim=1)  # [b, 6, 4096]
-        x = x.permute(0, 2, 1)
-        # l4 -> transf feature
-        return x, l4_points
-
-
-# class get_model(nn.Module):
-#     def __init__(self, num_classes):
-#         super(get_model, self).__init__()
-#
-#         self.sa1 = PointNetSetAbstraction(1024, 0.1, 32, 9 + 3, [32, 32, 64], False)
-#         self.sa2 = PointNetSetAbstraction(256, 0.2, 32, 64 + 3, [64, 64, 128], False)
-#         self.sa3 = PointNetSetAbstraction(64, 0.4, 32, 128 + 3, [128, 128, 256], False)
-#         self.sa4 = PointNetSetAbstraction(16, 0.8, 32, 256 + 3, [256, 256, 512], False)
-#
-#         self.fp4 = PointNetFeaturePropagation(768, [256, 256])
-#         self.fp3 = PointNetFeaturePropagation(384, [256, 256])
-#         self.fp2 = PointNetFeaturePropagation(320, [256, 128])
-#         self.fp1 = PointNetFeaturePropagation(128, [128, 128, 128])
-#         self.conv1 = nn.Conv1d(128, 128, 1)
-#         self.bn1 = nn.BatchNorm1d(128)
-#         self.drop1 = nn.Dropout(0.5)
-#         self.conv2 = nn.Conv1d(128, num_classes, 1)
-#
-#     def forward(self, xyz):
-#         l0_points = xyz
-#         l0_xyz = xyz[:, :3, :]
-#
-#         l1_xyz, l1_points = self.sa1(l0_xyz, l0_points)  # [b, 3, 1024] [b, 64, 1024]
-#         l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)  # [b, 3 ,256] [b, 128, 256]
-#         l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)  # [b, 3, 64] [b, 526, 64]
-#         l4_xyz, l4_points = self.sa4(l3_xyz, l3_points)  # [b, 3, 16] [b, 512, 16]
-#
-#         l3_points = self.fp4(l3_xyz, l4_xyz, l3_points, l4_points)  # [b, 256, 64]
-#         l2_points = self.fp3(l2_xyz, l3_xyz, l2_points, l3_points)  # [b, 256, 256]
-#         l1_points = self.fp2(l1_xyz, l2_xyz, l1_points, l2_points)  # [b, 128, 1024]
-#         l0_points = self.fp1(l0_xyz, l1_xyz, None, l1_points)  # [b, 128, 4096]
-#
-#         x = self.drop1(F.relu(self.bn1(self.conv1(l0_points))))  # [b, 128, 4096]
-#         x = self.conv2(x)  # [b, 6, 4096]
-#         x = F.log_softmax(x, dim=1) # [b, 6, 4096]
-#         x = x.permute(0, 2, 1)
-#         # l4 -> transf feature
-#         return x, l4_points
-
-
-class get_loss(nn.Module):
-    def __init__(self):
-        """Class-weighted NLL loss on PointNet++ log-probabilities."""
-        super(get_loss, self).__init__()
-
-    def forward(self, pred, target, trans_feat, weight):
-        """
-        :param pred: torch.Tensor [n, num_classes], log-probabilities
-        :param target: LongTensor [n]
-        :param trans_feat: unused
-        :param weight: torch.Tensor [num_classes] or None, class weights
-        :return: scalar torch.Tensor
-        """
-        total_loss = F.nll_loss(pred, target, weight=weight)
-
-        return total_loss
-
-
-# if __name__ == '__main__':
-#     import torch
-#
-#     model = get_model(13)
-#     xyz = torch.rand(6, 9, 2048)
-#     (model(xyz))
+        x = self.drop1(F.relu(self.bn1(self.conv1(l0_points))))  # [b, 128, n_points]
+        x = F.log_softmax(self.conv2(x), dim=1)  # [b, num_classes, n_points]
+        return x.permute(0, 2, 1)

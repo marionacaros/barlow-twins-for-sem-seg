@@ -1,6 +1,8 @@
+"""Tests for the LiDAR-CAT3 and DALES datasets and the per-dataset settings."""
+# import torch before numpy: some conda MKL builds of numpy need the OpenMP runtime torch loads
+import torch
 import numpy as np
 import pytest
-import torch
 
 from src.datasets import DATASETS, BarlowTwinsDataset, DalesDataset, make_dataset, normalize_xy, resample
 
@@ -116,15 +118,13 @@ def test_class_weights_match_classes():
 
 def test_make_dataset(cat3_folder, dales_folder):
     """
-    `make_dataset` builds the right class and rejects constrained sampling for DALES.
+    `make_dataset` builds the right class for each dataset.
 
     :param cat3_folder: pathlib.Path, fixture folder
     :param dales_folder: pathlib.Path, fixture folder
     """
-    assert isinstance(make_dataset('cat3', str(cat3_folder), CAT3_FILES, 100, c_sample=True), BarlowTwinsDataset)
+    assert isinstance(make_dataset('cat3', str(cat3_folder), CAT3_FILES, 100), BarlowTwinsDataset)
     assert isinstance(make_dataset('dales', str(dales_folder), DALES_FILES, 100), DalesDataset)
-    with pytest.raises(ValueError):
-        make_dataset('dales', str(dales_folder), DALES_FILES, 100, c_sample=True)
 
 
 def test_resample_without_replacement():

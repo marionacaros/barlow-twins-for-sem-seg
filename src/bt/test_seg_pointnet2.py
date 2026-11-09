@@ -67,7 +67,7 @@ def test(dataset_folder,
 
     with torch.no_grad():
         for pc, targets, file_name in progressbar(test_dataloader):
-            seg_pred, _ = model(pc.float().transpose(2, 1).to(device))  # [1, n_points, n_classes]
+            seg_pred = model(pc.float().transpose(2, 1).to(device))  # [1, n_points, n_classes]
             preds = seg_pred.contiguous().view(-1, NUM_CLASSES).argmax(1).cpu().numpy()
             targets = targets.view(-1).numpy()
             metrics.update(preds, targets)
@@ -85,20 +85,32 @@ def test(dataset_folder,
                         4096, os.path.join(output_folder, 'IoU-results-cat3-pn2.csv'))
 
 
-if __name__ == '__main__':
+def parse_args():
+    """
+    Parse the command line.
+
+    :return: argparse.Namespace
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
     parser.add_argument('--output_folder', type=str, default='src/results/bt', help='output folder')
     parser.add_argument('--number_of_workers', type=int, default=0, help='number of workers for the dataloader')
-    parser.add_argument('--model_checkpoint', type=str, required=True, 
+    parser.add_argument('--model_checkpoint', type=str, required=True,
                         help='fine-tuned PointNet++ checkpoint (best_model.pth)')
     parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
                         help='folder with test_cls_files.txt')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--plot', action='store_true', help='save prediction plots of windows with minority classes')
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def main(args):
+    """
+    Evaluate a fine-tuned PointNet++ with the command-line settings.
+
+    :param args: argparse.Namespace from `parse_args`
+    """
     logging.basicConfig(format='%(asctime)s %(levelname)-8s %(message)s',
                         level=logging.INFO,
                         datefmt='%Y-%m-%d %H:%M:%S')
@@ -110,3 +122,7 @@ if __name__ == '__main__':
          args.path_list_files,
          get_device(args.device),
          args.plot)
+
+
+if __name__ == '__main__':
+    main(parse_args())

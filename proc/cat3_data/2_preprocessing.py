@@ -1,209 +1,190 @@
+"""
+Clean the LiDAR-CAT3 windows of 1_split_las.py and store them as [n_points, 11] float64 tensors (.pt).
+
+float64 keeps the 1 cm precision of the absolute UTM coordinates (float32 resolves only ~0.5 m at the CAT3
+northings); the dataset casts to float32 after normalizing x and y.
+
+PDAL must have been run on every window first to add the HeightAboveGround dimension.
+"""
 import argparse
 import glob
-import hashlib
 import logging
+import multiprocessing
 import os
-import random
 import pickle
+import random
+import time
+from functools import partial
+
+# import torch before numpy: some conda MKL builds of numpy need the OpenMP runtime torch loads
+import torch
 import laspy
 import numpy as np
-import torch
 from progressbar import progressbar
-import time
-import multiprocessing
-
-logging.basicConfig(format='[%(asctime)s %(levelname)s] %(message)s',
-                    level=logging.INFO,
-                    datefmt='%Y-%m-%d %H:%M:%S')
 
 NUM_CPUS = 20
+MIN_POINTS = 1024  # windows with fewer points after cleaning are not stored
+SCALE = 0.01  # LAS coordinate resolution used by 1_split_las.py (1 cm)
+
+# removed classes: 7 low points, 11 air points, 24 overlap, 30/31 sensor noise (1_split_las.py stores the noise
+# codes 104, 106 and 135, which do not fit LAS point format 3, as 30/31)
+NOISY_CLASSES = (7, 11, 24, 30, 31)
 
 
-def remove_ground_and_outliers(file, max_intensity=5000, TH_1=3, TH_2=8):
+def nir_key(x, y, z):
     """
-    1- Remove certain labeled points (by Terrasolid) to reduce noise and number of points
-    2- Add NIR from dictionary
-    3- Remove outliers defined as points > max_z and points < 0
-    5- Remove terrain points (up to n_points points in point cloud)
-    6- Add constrained sampling flag at column 11
+    Lookup key of a point in the NIR dictionary: its coordinates rounded to whole centimetres.
+    Must match `nir_key` in 1_split_las.py.
 
-    This classification is given:
-    1-Default, 2-Ground, 6-Building, 7-low points, 11-air points, 24-Overlapping, 104-Noise, 135-Noise
+    :param x: np.ndarray [n_points] float, coordinates in metres
+    :param y: np.ndarray [n_points] float
+    :param z: np.ndarray [n_points] float
+    :return: list of (int, int, int) tuples
+    """
+    cm = [np.round(np.asarray(c, dtype=np.float64) / SCALE).astype(np.int64) for c in (x, y, z)]
+    return list(zip(*(c.tolist() for c in cm)))
 
-    Point labels:
-    2 ➔ terreny
-    8 ➔ Punts clau del models
-    13 ➔ altres punts del terreny
-    24 ➔ solapament
-    135 (30) ➔ soroll del sensor
 
-    It stores torch files with preprocessed data (uses the globals max_z, n_points and out_path).
+def compute_ndvi(nir, red):
+    """
+    NDVI = (NIR - red) / (NIR + red), in [-1, 1]; -1 where NIR + red = 0 (no signal in either band), so the stored
+    value, rescaled to [0, 1], is 0.
+
+    :param nir: np.ndarray [n_points], NIR values
+    :param red: np.ndarray [n_points], red values
+    :return: np.ndarray [n_points] float64
+    """
+    nir = np.asarray(nir, dtype=np.float64)
+    red = np.asarray(red, dtype=np.float64)
+    total = nir + red
+    return np.divide(nir - red, total, out=np.full_like(total, -1.0), where=total != 0)
+
+
+def remove_ground_and_outliers(file, out_path, n_points, max_z, max_intensity=5000):
+    """
+    1- Remove noisy classes (Terrasolid labels) to reduce noise and number of points
+    2- Add NIR from the dictionary written by 1_split_las.py, and NDVI
+    3- Remove outliers: points with height above ground > max_z or < 0
+    4- Remove ground points, keeping only as many as needed to reach n_points
+
+    Raw classes (ICGC):
+    1 default, 2 ground, 6 building, 7 low points, 8 model key points (ground), 11 air points,
+    13 other ground points, 24 overlap, 104/106/135 sensor noise (stored as 30/31 by 1_split_las.py)
+
+    Stored columns: x, y, z, class, intensity, R, G, B, NIR, NDVI, height above ground / max_z.
 
     :param file: str, path of a window LAS file with HeightAboveGround and a matching <name>_NIR.pkl
+    :param out_path: str, output folder of the .pt windows
+    :param n_points: int, ground points are kept only up to this window size
+    :param max_z: float, maximum height above ground in metres
     :param max_intensity: int, intensity normalization constant
-    :param TH_1: int, unused
-    :param TH_2: int, unused
     """
-
-    fileName = file.split('/')[-1].split('.')[0]
+    fileName = os.path.splitext(os.path.basename(file))[0]
     data_f = laspy.read(file)
 
-    # Remove all categories of ground points
-    # data_f.points = data_f.points[np.where(data_f.classification != 2)]  # ground
-    data_f.points = data_f.points[np.where(data_f.classification != 7)]  # negative points
-    data_f.points = data_f.points[np.where(data_f.classification != 11)]  # air points
-    data_f.points = data_f.points[np.where(data_f.classification != 24)]  # overlap points
-    # data_f.points = data_f.points[np.where(data_f.classification != 8)]  # punts claus del models
-    # data_f.points = data_f.points[np.where(data_f.classification != 13)]  # altres punts de terreny
-
-    # Remove sensor noise
-    data_f.points = data_f.points[np.where(data_f.classification != 30)]
-    data_f.points = data_f.points[np.where(data_f.classification != 31)]
-    data_f.points = data_f.points[np.where(data_f.classification != 104)]
-    data_f.points = data_f.points[np.where(data_f.classification != 135)]
+    data_f.points = data_f.points[~np.isin(np.asarray(data_f.classification), NOISY_CLASSES)]
 
     try:
-        # Remove outliers (points above max_z)
+        # outliers: height above ground outside [0, max_z]
         data_f.points = data_f.points[np.where(data_f.HeightAboveGround <= max_z)]
-        # Remove points z < 0
         data_f.points = data_f.points[np.where(data_f.HeightAboveGround >= 0)]
 
-        # check file is not empty
-        if len(data_f.x) > 0:
+        if len(data_f.x) == 0:
+            return
 
-            # get NIR
-            nir_arr = []
-            with open(file.replace(".las", "") + '_NIR.pkl', 'rb') as f:
-                nir_dict = pickle.load(f)
+        # look the NIR of every point up with the same centimetre key used by 1_split_las.py
+        with open(file.replace(".las", "") + '_NIR.pkl', 'rb') as f:
+            nir_dict = pickle.load(f)
+        nir_arr = np.array([nir_dict[k] for k in nir_key(data_f.x, data_f.y, data_f.z)], dtype=np.float64)
 
-            for x, y, z in zip(data_f.x, data_f.y, data_f.z):
-                mystring = str(int(x)) + '_' + str(int(y)) + '_' + str(int(z))
-                hash_object = hashlib.md5(mystring.encode())
-                nir_arr.append(nir_dict[hash_object.hexdigest()])
+        ndvi_arr = compute_ndvi(nir_arr, data_f.red)  # range [-1, 1]
 
-            # NDVI
-            nir_arr = np.array(nir_arr)
-            ndvi_arr = (nir_arr - data_f.red) / (nir_arr + data_f.red)  # range [-1, 1]
+        pc = np.vstack((data_f.x, data_f.y, data_f.z,
+                        data_f.classification,  # 3
+                        data_f.intensity / max_intensity,  # 4
+                        data_f.red / 65536.0,  # 5
+                        data_f.green / 65536.0,  # 6
+                        data_f.blue / 65536.0,  # 7
+                        nir_arr / 65535.0,  # 8
+                        ndvi_arr,  # 9
+                        data_f.HeightAboveGround / max_z)).transpose()  # 10
 
-            pc = np.vstack((data_f.x, data_f.y, data_f.z,
-                            data_f.classification,  # 3
-                            data_f.intensity / max_intensity,  # 4
-                            data_f.red / 65536.0,  # 5
-                            data_f.green / 65536.0,  # 6
-                            data_f.blue / 65536.0,  # 7
-                            nir_arr / 65535.0,  # 8
-                            ndvi_arr,  # 9
-                            data_f.HeightAboveGround / max_z,  # 10
-                            np.zeros(len(data_f.x))))  # 11  constrained sampling flag
+        # intensity and NIR in [0, 1]; NDVI from [-1, 1] to [0, 1]
+        pc[:, 4] = np.clip(pc[:, 4], 0.0, 1.0)
+        pc[:, 8] = np.clip(pc[:, 8], 0.0, 1.0)
+        pc[:, 9] = np.clip((pc[:, 9] + 1) / 2, 0.0, 1.0)
 
-            pc = pc.transpose()
-            # if pc[:, 0].max() - pc[:, 0].min() == 0:
-            #     continue
-            # normalize axes between -1 and 1
-            # pc[:, 0] = 2*((pc[:, 0] - pc[:, 0].min()) / (pc[:, 0].max() - pc[:, 0].min()))-1
-            # pc[:, 1] = 2*((pc[:, 1] - pc[:, 1].min()) / (pc[:, 1].max() - pc[:, 1].min()))-1
-            # pc[:, 2] = pc[:, 2] / max_z  # (HAG)
+        # ground points (class 2) are only kept to fill windows that have fewer than n_points other points
+        n_not_ground = int(np.sum(pc[:, 3] != 2))
+        if 100 < n_not_ground < n_points:
+            i_terrain = np.flatnonzero(pc[:, 3] == 2).tolist()
+            n_needed = n_points - n_not_ground
+            if n_needed < len(i_terrain):
+                i_terrain = random.sample(i_terrain, k=n_needed)
+            pc = np.concatenate((pc[pc[:, 3] != 2], pc[i_terrain]), axis=0)
+        elif n_not_ground >= n_points:
+            pc = pc[pc[:, 3] != 2]
 
-            # Remove points z < 0
-            pc = pc[pc[:, 11] >= 0]
-
-            # make sure intensity and NIR is in range (0,1)
-            pc[:, 4] = np.clip(pc[:, 4], 0.0, 1.0)
-            pc[:, 8] = np.clip(pc[:, 8], 0.0, 1.0)
-            # normalize NDVI
-            pc[:, 9] = (pc[:, 9] + 1) / 2
-            pc[:, 9] = np.clip(pc[:, 9], 0.0, 1.0)
-
-            # Check if points different from terrain < n_points
-            len_pc = pc[pc[:, 3] != 2].shape[0]
-            if 100 < len_pc < n_points:
-                # Get indices of ground points
-                labels = pc[:, 3]
-                i_terrain = [i for i in range(len(labels)) if labels[i] == 2.0]
-                # i_terrain = np.where(labels == 2.0, labels)
-                len_needed_p = n_points - len_pc
-                # if we have enough points of ground to cover missed points
-                if len_needed_p < len(i_terrain):
-                    needed_i = random.sample(i_terrain, k=len_needed_p)
-                else:
-                    needed_i = i_terrain
-                points_needed_terrain = pc[needed_i, :]
-                # remove terrain points
-                pc = pc[pc[:, 3] != 2, :]
-                # store only needed terrain points
-                pc = np.concatenate((pc, points_needed_terrain), axis=0)
-
-            # if enough points, remove ground
-            elif len_pc >= n_points:
-                pc = pc[pc[:, 3] != 2, :]
-
-            # store files with 1024 points as minimum
-            if pc.shape[0] >= 1024:
-                torch_file = os.path.join(out_path, fileName) + '.pt'
-                torch.save(torch.FloatTensor(pc), torch_file)
+        if pc.shape[0] >= MIN_POINTS:
+            torch.save(torch.from_numpy(pc.astype(np.float64)), os.path.join(out_path, fileName) + '.pt')
 
     except Exception as e:
         print(f'Error {e} in file {fileName}')
 
 
-def parallel_proc(files_list, num_cpus):
+def parallel_proc(files_list, out_path, n_points, max_z, num_cpus):
     """
     Run `remove_ground_and_outliers` on every file with a multiprocessing pool.
 
     :param files_list: list of str, LAS file paths
+    :param out_path: str, output folder of the .pt windows
+    :param n_points: int, see `remove_ground_and_outliers`
+    :param max_z: float, see `remove_ground_and_outliers`
     :param num_cpus: int, number of processes
     """
-    p = multiprocessing.Pool(processes=num_cpus)
-
-    for _ in progressbar(p.imap_unordered(remove_ground_and_outliers, files_list, 1),
-                         max_value=len(files_list)):  # redirect_stdout=True)
-        pass
-    p.close()
-    p.join()
+    worker = partial(remove_ground_and_outliers, out_path=out_path, n_points=n_points, max_z=max_z)
+    with multiprocessing.Pool(processes=num_cpus) as p:
+        for _ in progressbar(p.imap_unordered(worker, files_list, 1), max_value=len(files_list)):
+            pass
 
 
-if __name__ == '__main__':
-    # IMPORTANT
-    # You must first have executed pdal on all files to get HeightAboveGround
+def parse_args():
+    """
+    Parse the command line.
 
-    parser = argparse.ArgumentParser()
+    :return: argparse.Namespace
+    """
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--out_path', type=str, required=True,
                         help='output folder where processed files are stored')
     parser.add_argument('--in_path', type=str, required=True, help='output folder of 1_split_las.py')
     parser.add_argument('--datasets', nargs='+', default=['RIBERA', 'cat3_data'], help='datasets names')
-    parser.add_argument('--n_points', type=int, default=4096)
-    parser.add_argument('--max_z', type=float, default=100.0)
+    parser.add_argument('--n_points', type=int, default=4096, help='ground points are kept only up to this size')
+    parser.add_argument('--max_z', type=float, default=100.0, help='maximum height above ground in metres')
+    return parser.parse_args()
 
-    args = parser.parse_args()
+
+def main(args):
+    """
+    Clean the windows of every dataset and store them as .pt tensors.
+
+    :param args: argparse.Namespace from `parse_args`
+    """
+    logging.basicConfig(format='[%(asctime)s %(levelname)s] %(message)s',
+                        level=logging.INFO,
+                        datefmt='%Y-%m-%d %H:%M:%S')
     start_time = time.time()
-
-    out_path = args.out_path
-    n_points = args.n_points
-    max_z = args.max_z
+    os.makedirs(args.out_path, exist_ok=True)
 
     for dataset_name in args.datasets:
-
-        # for input_path in paths:
-        logging.info(f'Dataset: {dataset_name}')
-        logging.info(f'Input path: {args.in_path}')
-
-        # ------ Remove ground, noise, outliers and normalize ------
-        logging.info(f"1. Remove points of ground and add constrained sampling flag ")
-
         in_path = os.path.join(args.in_path, dataset_name, 'pointclouds_w40x40/*.las')
-        logging.info(f'input path: {in_path}')
-        logging.info(f'output path: {args.out_path}')
-
-        if not os.path.exists(args.out_path):
-            os.makedirs(args.out_path)
-
         files = glob.glob(in_path)
-        logging.info(f'Num of files: {len(files)}')
-
-        # Multiprocessing
-        parallel_proc(files, num_cpus=NUM_CPUS)
-
-        print("--- Remove ground and noise time: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
-        rm_ground_time = time.time()
+        logging.info(f'Dataset: {dataset_name}, input: {in_path} ({len(files)} files), output: {args.out_path}')
+        parallel_proc(files, args.out_path, args.n_points, args.max_z, num_cpus=NUM_CPUS)
+        print("--- Elapsed time: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
 
     print("--- TOTAL TIME: %s h ---" % (round((time.time() - start_time) / 3600, 3)))
+
+
+if __name__ == '__main__':
+    main(parse_args())

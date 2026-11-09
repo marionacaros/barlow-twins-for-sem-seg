@@ -16,13 +16,11 @@ def rotate_point_cloud_z(batch_data, rotation_angle=None):
     if not rotation_angle:
         rotation_angle = np.random.uniform() * 2 * np.pi
     cosval, sinval = np.cos(rotation_angle), np.sin(rotation_angle)
+    # points are row vectors, so p @ R rotates them; z (third row/column of identity) is unchanged
     rotation_matrix = np.array([[cosval, sinval, 0],
                                 [-sinval, cosval, 0],
                                 [0, 0, 1]])
-    rotated_data = np.zeros(batch_data.shape, dtype=np.float32)
-    for k in range(batch_data.shape[0]):
-        rotated_data[k, ...] = np.dot(batch_data[k, ...].reshape((-1, 3)), rotation_matrix)
-    return rotated_data
+    return np.matmul(batch_data, rotation_matrix).astype(np.float32)
 
 
 def torch_rotate_point_cloud_z(batch_data, rotation_angle=None):

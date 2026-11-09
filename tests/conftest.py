@@ -17,14 +17,13 @@ def write_cat3_window(path, n_points, rng, x_extent=40.0):
     :param n_points: int
     :param rng: np.random.Generator
     :param x_extent: float, x range in metres (0 gives a degenerate axis)
-    :return: np.ndarray [n_points, 12]
+    :return: np.ndarray [n_points, 11]
     """
-    pc = rng.random((n_points, 12)).astype(np.float32)
+    pc = rng.random((n_points, 11)).astype(np.float32)
     pc[:, 0] = 400000 + pc[:, 0] * x_extent
     pc[:, 1] = 4500000 + pc[:, 1] * 40
     pc[:, 3] = rng.choice(CAT3_CODES, n_points)
     pc[:, 10] = pc[:, 2] * 3  # height above ground, up to 3 -> clipped to 1 after / 2
-    pc[:, 11] = 1
     torch.save(torch.from_numpy(pc), path)
     return pc
 

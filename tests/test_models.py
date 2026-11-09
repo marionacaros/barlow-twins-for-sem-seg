@@ -1,3 +1,4 @@
+"""Shape and loss tests for PointNet, PointNet++ and the Barlow Twins modules."""
 import pytest
 import torch
 
@@ -31,14 +32,14 @@ def test_pointnet2_shapes():
     """PointNet2 returns per-point log-probabilities [batch, n_points, classes]."""
     model = PointNet2(num_classes=6).eval()
     with torch.no_grad():
-        seg_pred, _ = model(torch.rand(2, 9, 1024))
+        seg_pred = model(torch.rand(2, 9, 1024))
     assert seg_pred.shape == (2, 1024, 6)
 
 
 def test_barlow_twins_loss():
     """The loss is non-negative and lower for identical views than for independent ones."""
     torch.manual_seed(0)
-    loss_fn = BarlowTwinsLoss(batch_size=64, z_dim=16)
+    loss_fn = BarlowTwinsLoss(batch_size=64)
     z = torch.randn(64, 16)
     same = loss_fn(z, z)
     independent = loss_fn(z, torch.randn(64, 16))

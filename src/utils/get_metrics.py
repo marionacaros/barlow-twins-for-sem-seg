@@ -5,6 +5,18 @@ import numpy as np
 import torch
 
 
+def _to_numpy(x):
+    """
+    Convert a tensor (on any device) or an array-like to a numpy array.
+
+    :param x: torch.Tensor or array-like
+    :return: np.ndarray
+    """
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+
 class SegmentationMetrics:
     """
     Accumulates a confusion matrix over a whole split, giving dataset-level per-class IoU, mIoU and accuracy
@@ -39,6 +51,8 @@ class SegmentationMetrics:
         targets = _to_numpy(targets).reshape(-1).astype(np.int64)
         valid = (targets != self.ignore_index) & (targets >= 0) & (targets < self.num_classes)
         preds, targets = preds[valid], targets[valid]
+        # confusion matrix in one pass: the pair (target t, prediction p) is encoded as t * num_classes + p,
+        # counted with bincount and reshaped so that conf[t, p] = number of points of class t predicted as p
         conf = np.bincount(self.num_classes * targets + preds,
                            minlength=self.num_classes ** 2).reshape(self.num_classes, self.num_classes)
         self.confusion += conf
@@ -96,18 +110,6 @@ class SegmentationMetrics:
         """
         iou = self.sample_iou_per_class()
         return float(np.nanmean(iou)) if not np.all(np.isnan(iou)) else float('nan')
-
-
-def _to_numpy(x):
-    """
-    Convert a tensor (on any device) or an array-like to a numpy array.
-
-    :param x: torch.Tensor or array-like
-    :return: np.ndarray
-    """
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    return np.asarray(x)
 
 
 def report_segmentation(metrics, class_names, model_name, n_params, elapsed_min, n_points, csv_path):

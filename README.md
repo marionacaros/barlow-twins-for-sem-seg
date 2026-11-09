@@ -126,10 +126,9 @@ All scripts take `--dataset_folder`, a flat folder of `.pt` files with one point
 | 6–8 | G, B, NIR | |
 | 9 | NDVI | |
 | 10 | height above ground | |
-| 11 | constrained-sampling flag (`--c_sample`) | |
 
 When a window is loaded, its points are sampled (without replacement) or duplicated to a fixed count, and x and y are scaled to [-1, 1].
-- **LiDAR-CAT3:** unclassified and ground points are dropped, and z is replaced by height above ground / 2, clipped to [0, 1]. The model gets 9 features.
+- **LiDAR-CAT3:** windows are stored in float64 with 1 cm coordinates (LAS scale 0.01 in `1_split_las.py`); windows made by the earlier scripts had x, y, z truncated to whole metres. Unclassified and ground points are dropped, and z is replaced by height above ground / 2, clipped to [0, 1]. The model gets 9 features.
 - **DALES:** windows are stored in float64, so absolute UTM coordinates keep their 1 cm precision until x and y are normalized. z stays absolute elevation (the area is flat), divided by 200, and the return attributes are divided by 7. The model gets 5 features. It is trained on all 8 DALES classes (label = DALES code − 1); unknown points (class 0) are ignored. Classes with less than 1% of the points (cars, trucks, power lines, fences, poles) get double weight in the loss.
 
 ### Split lists
