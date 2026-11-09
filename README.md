@@ -11,7 +11,7 @@ Official code for the MVA 2023 paper: [IEEE](https://ieeexplore.ieee.org/abstrac
 
 Airborne LiDAR captures the Earth's surface as large point clouds, but labeling them point by point is slow and costly. Some objects, such as pylons and power lines, make up less than 1% of the points.
 
-We pre-train a point-based encoder (PointNet or PointNet++) on unlabeled LiDAR scenes with **Barlow Twins**, then fine-tune it for semantic scene segmentation on a small labeled subset.
+We train a point-based segmentation network (PointNet or PointNet++) on a small labeled subset, improve its encoder with **Barlow Twins** on the unlabeled LiDAR scenes, and fine-tune the network again on the labeled subset.
 
 **Contributions**
 - A method for pre-training a 3D semantic scene segmentation model with self-supervised learning (SSL).
@@ -20,15 +20,25 @@ We pre-train a point-based encoder (PointNet or PointNet++) on unlabeled LiDAR s
 
 ## Method
 
+The pipeline in this repository has four stages:
+
+1. **Supervised training.** PointNet or PointNet++ is trained for semantic segmentation on the labeled windows.
+2. **Semantic deduplication** (LiDAR-CAT3). The embeddings of the supervised PointNet are used to remove redundant windows (see below).
+3. **Barlow Twins.** The supervised encoder is trained further with Barlow Twins on the deduplicated windows, as described in this section.
+4. **Fine-tuning.** A new segmentation network is initialized with the encoder trained with Barlow Twins in stage 3, and trained on the labeled windows. Its segmentation head starts from random weights.
+
+Barlow Twins works as follows:
+
 1. **Two distorted views.** Each point cloud is augmented twice with random down-sampling, up-sampling by point duplication and a random rotation in the *xy* plane. A new augmentation also moves a percentage of the points to random coordinates while keeping their other attributes: 2–5% in the first view and 10% in the second.
 2. **Encoder and projector.** Both views go through the same point-based encoder (PointNet or PointNet++ without the classification layers, 4096 input points). A projector (Linear 512 → BatchNorm → ReLU → Linear 128) maps the encoder output to a 128-d embedding.
 3. **Barlow Twins loss.** The loss pushes the cross-correlation matrix between the two embeddings towards the identity. This makes the features invariant to the distortions and reduces redundancy between them.
 
    $$\mathcal{L}_{BT} = \sum_i (1 - C_{ii})^2 + \lambda \sum_i \sum_{j \neq i} C_{ij}^2$$
 
-4. **Fine-tuning.** The pre-trained encoder initializes PointNet or PointNet++, which is then trained for semantic segmentation on the labeled data.
+**Semantic deduplication.** LiDAR-CAT3 is dominated by dense vegetation, so before Barlow Twins training we remove redundant windows, following [SemDeDup](https://arxiv.org/abs/2303.09540). Each window is embedded with the 1024-d global feature of the supervised PointNet, and the labeled and unlabeled windows are clustered together with k-means (100 clusters). Two filters are available:
 
-**Semantic deduplication.** LiDAR-CAT3 is dominated by dense vegetation, so before SSL training we remove redundant samples with [SemDeDup](https://arxiv.org/abs/2303.09540). It uses the embeddings of a PointNet trained on the labeled data, with a similarity threshold of 0.996. This shrinks the unlabeled set by about 60% and was essential for learning good representations of the minority classes.
+- **Centroid filter** (`proc/semdedup_centroid.py`). A window is kept if its cosine similarity to its cluster centroid is below 0.996. The first window of each cluster is always kept. This filter built the committed `train_reduced_files_semdedup0996.txt`, which shrinks the training set by about 60% (45,915 to 20,512 windows). The reduction was essential for learning good representations of the minority classes.
+- **Pairwise SemDeDup** (`proc/semdedup_pairwise.py`). Inside each cluster, a window is removed if its cosine similarity to a window ranked before it is above 0.996. Windows are ranked by distance to the centroid, farthest first.
 
 ### Training details
 
@@ -61,7 +71,7 @@ Trained on an NVIDIA RTX A6000 (48 GB).
 
 ## Results
 
-Metrics are per-class IoU, mean IoU (mIoU) and overall accuracy (OA). **SSL +** means the model was pre-trained with Barlow Twins before fine-tuning.
+Metrics are per-class IoU, mean IoU (mIoU) and overall accuracy (OA). These are the paper's results. **SSL +** means the model went through stages 1 to 4 of the [Method](#method): the last supervised model was trained from the encoder that Barlow Twins had trained, starting from the supervised encoder.
 
 **LiDAR-CAT3, 12% of labeled data**
 
@@ -140,49 +150,74 @@ When a window is loaded, its points are sampled (without replacement) or duplica
 | `val_cls_files.txt` | **Labeled** windows used for fine-tuning. The scripts split them by block into train and validation, so overlapping windows never end up in both. |
 | `train_cls_files.txt` | The remaining, **unlabeled** training windows. |
 | `test_cls_files.txt` | Test windows. They are the same for every share of labeled data. |
-| `train_reduced_files_semdedup0996.txt` | (LiDAR-CAT3) Unlabeled windows left after semantic deduplication with threshold 0.996, used for Barlow Twins pre-training. |
+| `train_reduced_files_semdedup0996.txt` | (LiDAR-CAT3) Windows left after semantic deduplication of the labeled and unlabeled windows with threshold 0.996, used for Barlow Twins training. The same file is in `_10`, `_50` and `_p1`; `_20` has none. Rebuild it with `proc/semdedup_centroid.py` or `proc/semdedup_pairwise.py`. |
 
 The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._10` holds the 12% labeled split used in the paper. `RGBN_..._p1` has the same lists plus `val_object_files.txt`. LiDAR-CAT3 test and validation windows come from separate blocks. The DALES lists cover every 25 m window of every tile: all 4,400 windows of the 11 test tiles are test windows, and the labeled sets are nested (10% ⊂ 20% ⊂ 50% of the 11,600 train windows). Rebuild them with `proc/dales_data/generate_dales_train_lists.py`.
 
 ## Usage
 
-The pipeline is: preprocessing (`proc/`) → split lists → supervised training on the labeled data → Barlow Twins training on all unlabeled data, starting from the supervised encoder → supervised fine-tuning → testing. The PointNet scripts take `--dataset cat3` (the default) or `--dataset dales`. Each dataset has its own default split folder, class weights and number of epochs.
+The pipeline has six steps:
+
+0. **Preprocessing** (`proc/`) builds the windows and the split lists.
+1. **Supervised training** of PointNet on the labeled windows only.
+2. **Semantic deduplication** (LiDAR-CAT3 only) with the embeddings of the step 1 model.
+3. **Barlow Twins training** on the deduplicated windows, with the encoder initialized from the step 1 model.
+4. **Supervised fine-tuning** on the labeled windows, with the encoder trained by Barlow Twins in step 3 and a new segmentation head.
+5. **Testing** on the test split.
+
+The PointNet scripts take `--dataset cat3` (the default) or `--dataset dales`. Each dataset has its own default split folder, class weights and number of epochs. The commands below use the 12% labeled LiDAR-CAT3 split.
 
 ```bash
+SPLIT=train_test_files/RGBN_40x40_barlow_10
+
 # 0. Preprocessing, LiDAR-CAT3
 python proc/cat3_data/1_split_las.py --LAS_files_path <las_dir> --out_path <windows_dir>
 python proc/cat3_data/2_preprocessing.py --in_path <windows_dir> --out_path <data_dir>
-# 0. Preprocessing, DALES: 25 m float64 windows in <dales_dir>/{train,test}, then the split lists.
-#    Use --dataset_folder <dales_dir>/train for steps 1-3 and <dales_dir>/test for step 4.
-python proc/dales_data/1_split_LAS_DALES.py --LAS_files_path <dales_las_dir> --out_path <dales_dir>
-python proc/dales_data/generate_dales_train_lists.py --dataset_folder <dales_dir>
 
-# 1. Supervised training on the labeled windows only (from scratch)
+# 1. Supervised training on the labeled windows (val_cls_files.txt), from scratch.
+#    Writes <supervised.pth> to src/checkpoints/.
 PYTHONPATH=. python src/bt/train_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
-    --path_list_files train_test_files/RGBN_40x40_barlow_10
+    --path_list_files $SPLIT
 
-# 1b. (LiDAR-CAT3) Semantic deduplication with the embeddings of the supervised model of step 1.
-#     semdedup_centroid.py reproduces the filter that built train_reduced_files_semdedup0996.txt;
-#     semdedup_pairwise.py runs SemDeDup. Pass the list it writes to step 2 with --train_list.
+# 2. Semantic deduplication of the labeled and unlabeled windows with the step 1 embeddings.
+#    Writes $SPLIT/train_reduced_files_semdedup0996_centroid.txt.
+#    semdedup_centroid.py repeats the filter that built the committed train_reduced_files_semdedup0996.txt;
+#    proc/semdedup_pairwise.py (same options) runs SemDeDup and writes ..._pairwise.txt instead.
 PYTHONPATH=. python proc/semdedup_centroid.py --dataset cat3 --dataset_folder <data_dir> \
-    --model_checkpoint <supervised.pth> --path_list_files train_test_files/RGBN_40x40_barlow_10 \
-    --embeddings <embeds.npz>
+    --model_checkpoint <supervised.pth> --path_list_files $SPLIT --embeddings <embeds.npz>
 
-# 2. Barlow Twins self-supervised training on the deduplicated windows,
-#    with the encoder initialised from the supervised model of step 1
+# 3. Barlow Twins training on the deduplicated windows, encoder initialized from step 1.
+#    Writes <bt.ckpt> to src/bt/checkpoints_cat3/.
 PYTHONPATH=. python src/bt/train_BT_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
+    --path_list_files $SPLIT --train_list train_reduced_files_semdedup0996_centroid.txt \
     --init_checkpoint <supervised.pth>
 
-# 3. Fine-tune the supervised model again, starting from the Barlow Twins encoder
+# 4. Supervised fine-tuning on the labeled windows, starting from the Barlow Twins encoder of step 3
+#    (the segmentation head starts from random weights). Writes <seg.pth> to src/checkpoints/.
 PYTHONPATH=. python src/bt/train_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
-    --model_checkpoint <bt.ckpt> --path_list_files train_test_files/RGBN_40x40_barlow_10
+    --path_list_files $SPLIT --model_checkpoint <bt.ckpt>
 
-# 4. Evaluate on the test split (add --plot to save a figure per window)
+# 5. Evaluate on the test split (add --plot to save a figure per window)
 PYTHONPATH=. python src/bt/test_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
-    --model_checkpoint <seg.pth> --path_list_files train_test_files/RGBN_40x40_barlow_10
+    --path_list_files $SPLIT --model_checkpoint <seg.pth>
 ```
 
-The PointNet++ scripts follow the same steps for LiDAR-CAT3: `train_seg_pointnet2.py` (supervised training), `train_BT_pointnet2.py` (pass the supervised `best_model.pth` with `--init_checkpoint`), `train_seg_pointnet2.py` again (pass the Barlow Twins checkpoint with `--checkpoint`) and `test_seg_pointnet2.py`.
+To skip step 2 and use the committed deduplicated list, leave out `--train_list` in step 3.
+
+**DALES** has no deduplication step. Barlow Twins trains on the unlabeled and labeled windows together (`train_cls_files.txt` plus `val_cls_files.txt`). Build the windows and lists first, then run steps 1, 3, 4 and 5 with `--dataset dales`, leaving out `--path_list_files` and `--train_list`. Use `--dataset_folder <dales_dir>/train` for steps 1, 3 and 4, and `<dales_dir>/test` for step 5.
+
+```bash
+python proc/dales_data/1_split_LAS_DALES.py --LAS_files_path <dales_las_dir> --out_path <dales_dir>
+python proc/dales_data/generate_dales_train_lists.py --dataset_folder <dales_dir>
+```
+
+**PointNet++** (LiDAR-CAT3 only) follows the same steps:
+
+1. `train_seg_pointnet2.py` writes `best_model.pth` under `log/sem_seg/<run>/checkpoints/`.
+2. The deduplication scripts embed windows with PointNet only, so they need the supervised PointNet from step 1 of the PointNet pipeline. Alternatively, use the committed list.
+3. `train_BT_pointnet2.py --train_list <deduplicated list> --init_checkpoint <best_model.pth>` writes `<bt.ckpt>` to `src/bt/checkpoints_PN2/`.
+4. `train_seg_pointnet2.py --checkpoint <bt.ckpt>` fine-tunes from the Barlow Twins encoder.
+5. `test_seg_pointnet2.py`.
 
 **Outputs.** These default folders are all git-ignored:
 - Barlow Twins checkpoints: `src/bt/checkpoints_<dataset>/`.
