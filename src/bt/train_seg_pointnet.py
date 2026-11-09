@@ -16,9 +16,11 @@ from src.datasets import DATASETS, make_dataset
 from src.models.barlow_twins import BarlowTwins
 from src.models.pointnet import SegmentationPointNet
 from src.utils.get_metrics import SegmentationMetrics
+from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name
 from src.utils.train_utils import (get_device, load_checkpoint, make_generator, read_list,
                                    seed_worker, set_seed, split_by_block, timestamp)
 from src.utils.utils import rotate_point_cloud_z, save_checkpoint
+
 
 def train_loop(data, optimizer, ce_loss, pointnet, device, train=True):
     """
@@ -77,10 +79,12 @@ def train(dataset,
           checkpoint_dir,
           log_dir,
           save_after_epoch,
-          device):
+          device,
+          mlflow_uri=None,
+          mlflow_experiment=None):
     """
     Fine-tune PointNet for semantic segmentation, optionally starting from a Barlow Twins encoder. Logs to TensorBoard
-    and saves the checkpoint with the best validation loss.
+    (and MLflow when `mlflow_uri` is given) and saves the checkpoint with the best validation loss.
 
     :param dataset: str, 'cat3' or 'dales'
     :param dataset_folder: str, folder with the .pt windows
@@ -98,7 +102,10 @@ def train(dataset,
     :param log_dir: str, TensorBoard folder
     :param save_after_epoch: int, also save every epoch after this one (-1: only the best)
     :param device: str, 'cuda' or 'cpu'
+    :param mlflow_uri: str or None, MLflow tracking URI (None: no MLflow logging)
+    :param mlflow_experiment: str or None, MLflow experiment (default: barlow_twins_<dataset>)
     """
+    params = dict(locals())
     start_time = time.time()
     set_seed(seed)
     config = DATASETS[dataset]
@@ -162,66 +169,84 @@ def train(dataset,
     ce_loss = torch.nn.CrossEntropyLoss(weight=c_weights, reduction='mean', ignore_index=-1)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=config['milestones'], gamma=0.5)
 
-    best_vloss = np.inf
-    epochs_since_improvement = 0
+    params.update(n_train=len(train_files), n_val=len(val_files), trainable_params=total_params)
+    with MLflowRun(mlflow_uri, experiment_name(mlflow_experiment, dataset), run_name=f'finetune{name}',
+                   params={k: v for k, v in params.items() if not k.startswith('mlflow')},
+                   tags={'stage': 'finetune', 'init': 'barlow_twins' if model_checkpoint else 'scratch'}) as run:
+        best_vloss = np.inf
+        epochs_since_improvement = 0
 
-    for epoch in progressbar(range(epochs), redirect_stdout=True):
-        train_losses, train_ce_losses, val_losses = [], [], []
-        train_metrics = SegmentationMetrics(num_classes)
-        val_metrics = SegmentationMetrics(num_classes)
+        for epoch in progressbar(range(epochs), redirect_stdout=True):
+            train_losses, train_ce_losses, val_losses = [], [], []
+            train_metrics = SegmentationMetrics(num_classes)
+            val_metrics = SegmentationMetrics(num_classes)
 
-        # --------------------------------------------- train loop ---------------------------------------------
-        for data in train_dataloader:
-            metrics, targets, preds = train_loop(data, optimizer, ce_loss, pointnet, device, train=True)
-            train_metrics.update(preds, targets)
-            train_ce_losses.append(metrics['ce_loss'].item())
-            train_losses.append(metrics['loss'].item())
+            # --------------------------------------------- train loop ---------------------------------------------
+            for data in train_dataloader:
+                metrics, targets, preds = train_loop(data, optimizer, ce_loss, pointnet, device, train=True)
+                train_metrics.update(preds, targets)
+                train_ce_losses.append(metrics['ce_loss'].item())
+                train_losses.append(metrics['loss'].item())
 
-        scheduler.step()
+            scheduler.step()
 
-        # --------------------------------------------- val loop ---------------------------------------------
-        with torch.no_grad():
-            for data in val_dataloader:
-                metrics, targets, preds = train_loop(data, optimizer, ce_loss, pointnet, device, train=False)
-                val_metrics.update(preds, targets)
-                val_losses.append(metrics['loss'].item())
+            # --------------------------------------------- val loop ---------------------------------------------
+            with torch.no_grad():
+                for data in val_dataloader:
+                    metrics, targets, preds = train_loop(data, optimizer, ce_loss, pointnet, device, train=False)
+                    val_metrics.update(preds, targets)
+                    val_losses.append(metrics['loss'].item())
 
-        epoch_val_loss = float(np.mean(val_losses))
+            epoch_val_loss = float(np.mean(val_losses))
 
-        # ------------------------------------------- Tensorboard -------------------------------------------
-        writer_train.add_scalar('loss', np.mean(train_losses), epoch)
-        writer_val.add_scalar('loss', epoch_val_loss, epoch)
-        writer_train.add_scalar('loss_NLL', np.mean(train_ce_losses), epoch)
-        writer_val.add_scalar('loss_NLL', epoch_val_loss, epoch)
-        writer_train.add_scalar('accuracy', train_metrics.accuracy(), epoch)
-        writer_val.add_scalar('accuracy', val_metrics.accuracy(), epoch)
-        writer_train.add_scalar('mIoU', train_metrics.mean_iou(), epoch)
-        writer_val.add_scalar('mIoU', val_metrics.mean_iou(), epoch)
-        writer_val.add_scalar('epochs_since_improvement', epochs_since_improvement, epoch)
-        writer_val.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch)
-        for c, (iou_t, iou_v) in enumerate(zip(train_metrics.iou_per_class(), val_metrics.iou_per_class())):
-            writer_train.add_scalar(f'_iou_{class_names[c]}', iou_t, epoch)
-            writer_val.add_scalar(f'_iou_{class_names[c]}', iou_v, epoch)
-        writer_train.flush()
-        writer_val.flush()
+            # ------------------------------------------- Tensorboard -------------------------------------------
+            writer_train.add_scalar('loss', np.mean(train_losses), epoch)
+            writer_val.add_scalar('loss', epoch_val_loss, epoch)
+            writer_train.add_scalar('loss_NLL', np.mean(train_ce_losses), epoch)
+            writer_val.add_scalar('loss_NLL', epoch_val_loss, epoch)
+            writer_train.add_scalar('accuracy', train_metrics.accuracy(), epoch)
+            writer_val.add_scalar('accuracy', val_metrics.accuracy(), epoch)
+            writer_train.add_scalar('mIoU', train_metrics.mean_iou(), epoch)
+            writer_val.add_scalar('mIoU', val_metrics.mean_iou(), epoch)
+            writer_val.add_scalar('epochs_since_improvement', epochs_since_improvement, epoch)
+            writer_val.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch)
+            for c, (iou_t, iou_v) in enumerate(zip(train_metrics.iou_per_class(), val_metrics.iou_per_class())):
+                writer_train.add_scalar(f'_iou_{class_names[c]}', iou_t, epoch)
+                writer_val.add_scalar(f'_iou_{class_names[c]}', iou_v, epoch)
+            writer_train.flush()
+            writer_val.flush()
 
-        # ------------------------------------------- checkpoints -------------------------------------------
-        ckpt_name = f'{run_time}_seg{name}'
-        if epoch_val_loss < best_vloss:
-            save_checkpoint(ckpt_name, epoch, epochs_since_improvement, pointnet, optimizer,
-                            val_metrics.accuracy(), batch_size, learning_rate, n_points,
-                            checkpoint_dir=checkpoint_dir)
-            epochs_since_improvement = 0
-            best_vloss = epoch_val_loss
-            logging.info(f'Checkpoint saved, epoch {epoch}')
-        else:
-            epochs_since_improvement += 1
+            # ------------------------------------------- MLflow -------------------------------------------
+            epoch_metrics = {'train_loss': np.mean(train_losses), 'train_ce_loss': np.mean(train_ce_losses),
+                             'val_loss': epoch_val_loss,
+                             'train_accuracy': train_metrics.accuracy(), 'val_accuracy': val_metrics.accuracy(),
+                             'train_mIoU': train_metrics.mean_iou(), 'val_mIoU': val_metrics.mean_iou(),
+                             'learning_rate': optimizer.param_groups[0]['lr'],
+                             'epochs_since_improvement': epochs_since_improvement}
+            for c, (iou_t, iou_v) in enumerate(zip(train_metrics.iou_per_class(), val_metrics.iou_per_class())):
+                epoch_metrics[f'train_iou_{class_names[c]}'] = iou_t
+                epoch_metrics[f'val_iou_{class_names[c]}'] = iou_v
+            run.log_metrics(epoch_metrics, step=epoch)
 
-        # optionally also keep one checkpoint per epoch at the end of training
-        if 0 <= save_after_epoch < epoch:
-            save_checkpoint(f'{ckpt_name}_ep{epoch}', epoch, epochs_since_improvement, pointnet, optimizer,
-                            val_metrics.accuracy(), batch_size, learning_rate, n_points,
-                            checkpoint_dir=checkpoint_dir)
+            # ------------------------------------------- checkpoints -------------------------------------------
+            ckpt_name = f'{run_time}_seg{name}'
+            if epoch_val_loss < best_vloss:
+                best_path = save_checkpoint(ckpt_name, epoch, epochs_since_improvement, pointnet, optimizer,
+                                            val_metrics.accuracy(), batch_size, learning_rate, n_points,
+                                            checkpoint_dir=checkpoint_dir, extra={'mlflow_run_id': run.run_id})
+                run.set_tags({'best_checkpoint': best_path})
+                run.log_metrics({'best_val_loss': epoch_val_loss, 'best_epoch': epoch}, step=epoch)
+                epochs_since_improvement = 0
+                best_vloss = epoch_val_loss
+                logging.info(f'Checkpoint saved, epoch {epoch}')
+            else:
+                epochs_since_improvement += 1
+
+            # optionally also keep one checkpoint per epoch at the end of training
+            if 0 <= save_after_epoch < epoch:
+                save_checkpoint(f'{ckpt_name}_ep{epoch}', epoch, epochs_since_improvement, pointnet, optimizer,
+                                val_metrics.accuracy(), batch_size, learning_rate, n_points,
+                                checkpoint_dir=checkpoint_dir, extra={'mlflow_run_id': run.run_id})
 
     writer_train.close()
     writer_val.close()
@@ -257,6 +282,7 @@ def parse_args():
     parser.add_argument('--save_after_epoch', type=int, default=-1,
                         help='also save a checkpoint every epoch after this one (-1: only the best val loss)')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
+    add_mlflow_args(parser)
     return parser.parse_args()
 
 
@@ -285,7 +311,9 @@ def main(args):
           checkpoint_dir=args.checkpoint_dir,
           log_dir=args.log_dir,
           save_after_epoch=args.save_after_epoch,
-          device=get_device(args.device))
+          device=get_device(args.device),
+          mlflow_uri=args.mlflow_uri,
+          mlflow_experiment=args.mlflow_experiment)
 
 
 if __name__ == '__main__':

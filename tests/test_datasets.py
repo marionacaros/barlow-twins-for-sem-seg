@@ -4,7 +4,8 @@ import torch
 import numpy as np
 import pytest
 
-from src.datasets import DATASETS, BarlowTwinsDataset, DalesDataset, make_dataset, normalize_xy, resample
+from src.datasets import (DATASETS, BarlowTwinsDataset, DalesDataset, make_dataset, normalize_xy,
+                          normalize_z_minmax, resample)
 
 CAT3_FILES = ['pc_0_RIBERA_pt436662_w1.pt', 'pc_0_RIBERA_pt436662_w2.pt', 'pc_0_CAT3_493679_w3.pt']
 DALES_FILES = ['5140_54390_w1.pt', '5140_54390_w2.pt']
@@ -142,3 +143,45 @@ def test_normalize_xy_degenerate_axis():
     out = normalize_xy(pc.copy())
     assert np.all(out[:, 0] == 0)
     assert out[:, 1].min() == -1 and out[:, 1].max() == 1
+
+
+def test_dales_no_ground_minmax(dales_folder):
+    """
+    Without ground: no ground points, 7 labels, z min-max scaled to [0, 1].
+
+    :param dales_folder: pathlib.Path, fixture folder
+    """
+    dataset = DalesDataset(str(dales_folder), number_of_points=4096, files=DALES_FILES, use_ground=False,
+                           z_norm='minmax')
+    for i in range(len(dataset)):
+        pc, labels, _ = dataset[i]
+        assert pc.shape == (4096, 5)
+        assert set(labels.tolist()) <= set(range(7))
+        assert pc[:, 2].min() == 0 and pc[:, 2].max() == 1
+
+
+def test_dales_no_ground_label_mapping():
+    """Without ground, raw codes map to raw class - 2; unknown and ground map to -1."""
+    pc = torch.zeros(9, 6)
+    pc[:, 3] = torch.arange(9)
+    assert DalesDataset.get_labels(pc, use_ground=False).tolist() == [-1, -1, 0, 1, 2, 3, 4, 5, 6]
+
+
+def test_dales_all_ground_window_raises(tmp_path):
+    """
+    A window with only ground points cannot be used without ground.
+
+    :param tmp_path: pathlib.Path, pytest temporary folder
+    """
+    pc = np.zeros((10, 6))
+    pc[:, 3] = 1
+    torch.save(torch.from_numpy(pc), tmp_path / 'w.pt')
+    with pytest.raises(ValueError):
+        DalesDataset.prepare_data(str(tmp_path / 'w.pt'), 100, use_ground=False)
+
+
+def test_normalize_z_minmax():
+    """z goes to [0, 1]; a flat cloud gets z = 0."""
+    pc = np.stack([np.zeros(5), np.zeros(5), np.array([10., 12, 14, 16, 18])], axis=1)
+    assert normalize_z_minmax(pc.copy())[:, 2].tolist() == [0, 0.25, 0.5, 0.75, 1]
+    assert np.all(normalize_z_minmax(np.ones((3, 3)))[:, 2] == 0)

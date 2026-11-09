@@ -41,7 +41,8 @@ def torch_rotate_point_cloud_z(batch_data, rotation_angle=None):
 
 
 def save_checkpoint(name, epoch, epochs_since_improvement, model, optimizer, accuracy, batch_size,
-                    learning_rate, n_points, weighing_method=None, weights=None, checkpoint_dir='src/checkpoints'):
+                    learning_rate, n_points, weighing_method=None, weights=None, checkpoint_dir='src/checkpoints',
+                    extra=None):
     """
     Save a fine-tuning checkpoint to <checkpoint_dir>/<name>.pth and return its path.
 
@@ -57,6 +58,7 @@ def save_checkpoint(name, epoch, epochs_since_improvement, model, optimizer, acc
     :param weighing_method: str or None
     :param weights: list or None, class weights
     :param checkpoint_dir: str, output folder
+    :param extra: dict or None, additional entries stored in the checkpoint (e.g. the MLflow run id)
     :return: str
     """
     state = {
@@ -69,7 +71,8 @@ def save_checkpoint(name, epoch, epochs_since_improvement, model, optimizer, acc
         'epochs_since_improvement': epochs_since_improvement,
         'accuracy': accuracy,
         'weighing_method': weighing_method,
-        'weights': weights if weights is not None else []
+        'weights': weights if weights is not None else [],
+        **(extra or {}),
     }
     os.makedirs(checkpoint_dir, exist_ok=True)
     path = os.path.join(checkpoint_dir, name + '.pth')

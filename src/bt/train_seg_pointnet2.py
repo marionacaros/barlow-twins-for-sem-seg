@@ -14,6 +14,7 @@ from src.models.barlow_twins import BarlowTwinsPN2
 from src.models.pointnet2_sem_seg import PointNet2
 from src.utils.train_utils import (cat3_block_id, get_device, load_checkpoint, make_generator, read_list,
                                    seed_worker, set_seed, split_by_block, timestamp)
+from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name
 from src.utils.utils import rotate_point_cloud_z
 
 CLASS_NAMES = DATASETS['cat3']['class_names']
@@ -116,6 +117,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, log_string):
     :param criterion: torch.nn.NLLLoss
     :param device: str, 'cuda' or 'cpu'
     :param log_string: callable, from `make_logger`
+    :return: mean loss (float), point accuracy (float)
     """
     total_correct = 0
     total_seen = 0
@@ -145,8 +147,11 @@ def train_one_epoch(model, loader, optimizer, criterion, device, log_string):
         total_seen += batch_label.size
         loss_sum += loss.item()
 
-    log_string('Training mean loss: %f' % (loss_sum / max(len(loader), 1)))
-    log_string('Training accuracy: %f' % (total_correct / float(max(total_seen, 1))))
+    mean_loss = loss_sum / max(len(loader), 1)
+    accuracy = total_correct / float(max(total_seen, 1))
+    log_string('Training mean loss: %f' % mean_loss)
+    log_string('Training accuracy: %f' % accuracy)
+    return mean_loss, accuracy
 
 
 @torch.no_grad()
@@ -159,7 +164,7 @@ def validate(model, loader, criterion, device, log_string):
     :param criterion: torch.nn.NLLLoss
     :param device: str, 'cuda' or 'cpu'
     :param log_string: callable, from `make_logger`
-    :return: mean loss (float), mIoU (float)
+    :return: mean loss (float), mIoU (float), point accuracy (float), IoU per class (np.ndarray [NUM_CLASSES])
     """
     total_correct = 0
     total_seen = 0
@@ -201,7 +206,8 @@ def validate(model, loader, criterion, device, log_string):
     mean_loss = loss_sum / max(len(loader), 1)
     log_string('eval mean loss: %f' % mean_loss)
     log_string('eval point avg class IoU: %f' % miou)
-    log_string('eval point accuracy: %f' % (total_correct / float(max(total_seen, 1))))
+    accuracy = total_correct / float(max(total_seen, 1))
+    log_string('eval point accuracy: %f' % accuracy)
     log_string('eval point avg class acc: %f' % np.nanmean(acc_per_class))
 
     iou_per_class_str = '------- IoU --------\n'
@@ -210,7 +216,7 @@ def validate(model, loader, criterion, device, log_string):
             CLASS_NAMES[c].ljust(14), labelweights[c], iou_per_class[c])
     log_string(iou_per_class_str)
 
-    return mean_loss, miou
+    return mean_loss, miou, accuracy, iou_per_class
 
 
 def parse_args():
@@ -244,6 +250,7 @@ def parse_args():
     parser.add_argument('--checkpoint', type=str, default='', help='Barlow Twins (.ckpt) checkpoint to start from')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
+    add_mlflow_args(parser)
     return parser.parse_args()
 
 
@@ -328,32 +335,39 @@ def main(args):
     optimizer = make_optimizer(classifier, args.optimizer, args.learning_rate, args.decay_rate)
 
     # ------------------------------------------ training ------------------------------------------
-    best_loss_val = np.inf
-    for epoch in range(args.epoch):
-        log_string('**** Epoch %d/%s ****' % (epoch + 1, args.epoch))
-        # step decay: lr * lr_decay every step_size epochs (never below LEARNING_RATE_CLIP);
-        # BatchNorm momentum decays the same way (never below MOMENTUM_CLIP)
-        lr = max(args.learning_rate * (args.lr_decay ** (epoch // args.step_size)), LEARNING_RATE_CLIP)
-        log_string('Learning rate:%f' % lr)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-        momentum = max(MOMENTUM_ORIGINAL * (MOMENTUM_DECAY ** (epoch // args.step_size)), MOMENTUM_CLIP)
-        classifier.apply(lambda m: bn_momentum_adjust(m, momentum))
+    with MLflowRun(args.mlflow_uri, experiment_name(args.mlflow_experiment, 'cat3'), run_name=f'finetune_{name}',
+                   params={k: v for k, v in vars(args).items() if not k.startswith('mlflow')},
+                   tags={'stage': 'finetune', 'init': 'barlow_twins' if args.checkpoint else 'scratch'}) as run:
+        best_loss_val = np.inf
+        for epoch in range(args.epoch):
+            log_string('**** Epoch %d/%s ****' % (epoch + 1, args.epoch))
+            # step decay: lr * lr_decay every step_size epochs (never below LEARNING_RATE_CLIP);
+            # BatchNorm momentum decays the same way (never below MOMENTUM_CLIP)
+            lr = max(args.learning_rate * (args.lr_decay ** (epoch // args.step_size)), LEARNING_RATE_CLIP)
+            log_string('Learning rate:%f' % lr)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+            momentum = max(MOMENTUM_ORIGINAL * (MOMENTUM_DECAY ** (epoch // args.step_size)), MOMENTUM_CLIP)
+            classifier.apply(lambda m: bn_momentum_adjust(m, momentum))
 
-        train_one_epoch(classifier, train_loader, optimizer, criterion, device, log_string)
+            train_loss, train_acc = train_one_epoch(classifier, train_loader, optimizer, criterion, device, log_string)
 
-        # latest model, overwritten every 5 epochs
-        if epoch % 5 == 0:
-            save_model(os.path.join(checkpoints_dir, 'models.pth'), epoch, classifier, optimizer, log_string)
+            # latest model, overwritten every 5 epochs
+            if epoch % 5 == 0:
+                save_model(os.path.join(checkpoints_dir, 'models.pth'), epoch, classifier, optimizer, log_string)
 
-        log_string('---- EPOCH %03d EVALUATION ----' % (epoch + 1))
-        mean_loss, miou = validate(classifier, val_loader, criterion, device, log_string)
+            log_string('---- EPOCH %03d EVALUATION ----' % (epoch + 1))
+            mean_loss, miou, val_acc, iou_per_class = validate(classifier, val_loader, criterion, device, log_string)
+            run.log_metrics({'train_loss': train_loss, 'train_accuracy': train_acc, 'val_loss': mean_loss,
+                             'val_mIoU': miou, 'val_accuracy': val_acc, 'learning_rate': lr, 'bn_momentum': momentum,
+                             **{f'val_iou_{c}': v for c, v in zip(CLASS_NAMES, iou_per_class)}}, step=epoch)
 
-        # best model = lowest validation loss
-        if mean_loss <= best_loss_val:
-            best_loss_val = mean_loss
-            save_model(os.path.join(checkpoints_dir, name + 'best_model.pth'), epoch, classifier, optimizer,
-                       log_string, class_avg_iou=miou)
+            # best model = lowest validation loss
+            if mean_loss <= best_loss_val:
+                best_loss_val = mean_loss
+                save_model(os.path.join(checkpoints_dir, name + 'best_model.pth'), epoch, classifier, optimizer,
+                           log_string, class_avg_iou=miou, mlflow_run_id=run.run_id)
+                run.log_metrics({'best_val_loss': mean_loss, 'best_epoch': epoch}, step=epoch)
 
 
 if __name__ == '__main__':

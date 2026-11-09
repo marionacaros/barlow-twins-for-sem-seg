@@ -86,7 +86,7 @@ The pre-trained models outperform training from scratch on both datasets. The ga
 ## Repository structure
 
 ```
-proc/               Preprocessing: tile LAS files, clean and normalize, build split lists
+proc/               Preprocessing: tile LAS files, clean and normalize, build split lists, semantic deduplication
 train_test_files/   Split lists per dataset and share of labeled data
 src/datasets.py     Dataset classes and per-dataset settings (LiDAR-CAT3, DALES)
 src/models/         PointNet, PointNet++ and Barlow Twins (PyTorch Lightning) models
@@ -146,30 +146,43 @@ The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._1
 
 ## Usage
 
-The pipeline is: preprocessing (`proc/`) → split lists → Barlow Twins pre-training → fine-tuning → testing. The PointNet scripts take `--dataset cat3` (the default) or `--dataset dales`. Each dataset has its own default split folder, class weights and number of epochs.
+The pipeline is: preprocessing (`proc/`) → split lists → supervised training on the labeled data → Barlow Twins training on all unlabeled data, starting from the supervised encoder → supervised fine-tuning → testing. The PointNet scripts take `--dataset cat3` (the default) or `--dataset dales`. Each dataset has its own default split folder, class weights and number of epochs.
 
 ```bash
 # 0. Preprocessing, LiDAR-CAT3
 python proc/cat3_data/1_split_las.py --LAS_files_path <las_dir> --out_path <windows_dir>
 python proc/cat3_data/2_preprocessing.py --in_path <windows_dir> --out_path <data_dir>
 # 0. Preprocessing, DALES: 25 m float64 windows in <dales_dir>/{train,test}, then the split lists.
-#    Use --dataset_folder <dales_dir>/train for steps 1-2 and <dales_dir>/test for step 3.
+#    Use --dataset_folder <dales_dir>/train for steps 1-3 and <dales_dir>/test for step 4.
 python proc/dales_data/1_split_LAS_DALES.py --LAS_files_path <dales_las_dir> --out_path <dales_dir>
 python proc/dales_data/generate_dales_train_lists.py --dataset_folder <dales_dir>
 
-# 1. Barlow Twins self-supervised pre-training
-PYTHONPATH=. python src/bt/train_BT_pointnet.py --dataset cat3 --dataset_folder <data_dir>
+# 1. Supervised training on the labeled windows only (from scratch)
+PYTHONPATH=. python src/bt/train_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
+    --path_list_files train_test_files/RGBN_40x40_barlow_10
 
-# 2. Fine-tune for semantic segmentation (omit --model_checkpoint to train from scratch)
+# 1b. (LiDAR-CAT3) Semantic deduplication with the embeddings of the supervised model of step 1.
+#     semdedup_centroid.py reproduces the filter that built train_reduced_files_semdedup0996.txt;
+#     semdedup_pairwise.py runs SemDeDup. Pass the list it writes to step 2 with --train_list.
+PYTHONPATH=. python proc/semdedup_centroid.py --dataset cat3 --dataset_folder <data_dir> \
+    --model_checkpoint <supervised.pth> --path_list_files train_test_files/RGBN_40x40_barlow_10 \
+    --embeddings <embeds.npz>
+
+# 2. Barlow Twins self-supervised training on the deduplicated windows,
+#    with the encoder initialised from the supervised model of step 1
+PYTHONPATH=. python src/bt/train_BT_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
+    --init_checkpoint <supervised.pth>
+
+# 3. Fine-tune the supervised model again, starting from the Barlow Twins encoder
 PYTHONPATH=. python src/bt/train_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
     --model_checkpoint <bt.ckpt> --path_list_files train_test_files/RGBN_40x40_barlow_10
 
-# 3. Evaluate on the test split (add --plot to save a figure per window)
+# 4. Evaluate on the test split (add --plot to save a figure per window)
 PYTHONPATH=. python src/bt/test_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
     --model_checkpoint <seg.pth> --path_list_files train_test_files/RGBN_40x40_barlow_10
 ```
 
-The PointNet++ scripts follow the same steps for LiDAR-CAT3: `train_BT_pointnet2.py`, `train_seg_pointnet2.py` (pass the Barlow Twins checkpoint with `--checkpoint`) and `test_seg_pointnet2.py`.
+The PointNet++ scripts follow the same steps for LiDAR-CAT3: `train_seg_pointnet2.py` (supervised training), `train_BT_pointnet2.py` (pass the supervised `best_model.pth` with `--init_checkpoint`), `train_seg_pointnet2.py` again (pass the Barlow Twins checkpoint with `--checkpoint`) and `test_seg_pointnet2.py`.
 
 **Outputs.** These default folders are all git-ignored:
 - Barlow Twins checkpoints: `src/bt/checkpoints_<dataset>/`.

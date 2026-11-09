@@ -2,6 +2,7 @@
 # Install the torch build that matches your CUDA version first (https://pytorch.org/get-started/locally/).
 torch==2.5.1
 pytorch-lightning==2.3.0
+mlflow-skinny==3.18.0  # optional: MLflow tracking client (--mlflow_uri)
 torchmetrics==1.1.2
 numpy==1.26.4
 laspy==2.5.4
@@ -9,6 +10,9 @@ progressbar2==4.2.0
 tqdm==4.65.2
 tensorboard==2.17.0
 matplotlib==3.10.7
+# semantic deduplication (proc/semdedup_*.py)
+scikit-learn==1.7.2
+scipy==1.15.3
 
 # Tests.
 pytest==7.4.4

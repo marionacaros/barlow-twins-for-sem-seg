@@ -27,6 +27,20 @@ def normalize_xy(pc):
     return pc
 
 
+def normalize_z_minmax(pc):
+    """
+    Scale z (column 2) of a [n_points, dims] cloud to [0, 1] with the cloud's own min and max, in place.
+
+    A cloud with zero z extent gets z = 0.
+
+    :param pc: np.ndarray [n_points, dims]
+    :return: the same array
+    """
+    lo, hi = pc[:, 2].min(), pc[:, 2].max()
+    pc[:, 2] = (pc[:, 2] - lo) / (hi - lo) if hi > lo else 0.
+    return pc
+
+
 def resample(pc, number_of_points):
     """
     Randomly subsample (without replacement) or duplicate points so the cloud has exactly `number_of_points`.
@@ -200,8 +214,14 @@ class DalesDataset(data.Dataset):
     DALES windows stored as [n_points, dims] tensors.
 
     Stored columns: 0-2 x, y, z | 3 classification | 4 return number | 5 number of returns.
-    Returned features (5): x, y (normalized to [-1, 1]), z / 200, return number / 7, number of returns / 7.
+    Returned features (5): x, y (normalized to [-1, 1]), z (elevation / 200, or min-max scaled to [0, 1] per cloud),
+    return number / 7, number of returns / 7.
+
+    With use_ground=False the ground points (raw class 1) are dropped before resampling and the labels skip ground:
+    0 vegetation ... 6 buildings (raw class - 2).
     """
+
+    GROUND = 1  # raw DALES code of ground
 
     # raw DALES code -> segmentation label (index = raw code): the 8 DALES classes keep their order,
     # raw 0 (unknown) is ignored (-1) by the loss and the metrics
@@ -216,25 +236,33 @@ class DalesDataset(data.Dataset):
         6,   # 7 poles
         7,   # 8 buildings
     ])
+    # same, without ground: raw 1 (ground) is also ignored and the other classes shift down by one
+    LABEL_MAP_NO_GROUND = torch.tensor([-1, -1, 0, 1, 2, 3, 4, 5, 6])
 
     def __init__(self,
                  dataset_folder,
                  task='segmentation',
                  number_of_points=None,
                  files=None,
-                 fixed_num_points=True):
+                 fixed_num_points=True,
+                 use_ground=True,
+                 z_norm='elevation'):
         """
         :param dataset_folder: str, folder with the .pt windows
         :param task: str, kept for a common interface; DALES always returns per-point labels
         :param number_of_points: int or None, points per window when fixed_num_points
         :param files: list of str, window file names relative to dataset_folder
         :param fixed_num_points: bool, resample every window to number_of_points
+        :param use_ground: bool, keep ground points (False drops them and uses 7 labels)
+        :param z_norm: str, 'elevation' (z / 200) or 'minmax' (z scaled to [0, 1] per cloud)
         """
         self.dataset_folder = dataset_folder
         self.task = task
         self.n_points = number_of_points
         self.files = files
         self.fixed_num_points = fixed_num_points
+        self.use_ground = use_ground
+        self.z_norm = z_norm
 
     def __len__(self):
         """Number of windows."""
@@ -248,9 +276,11 @@ class DalesDataset(data.Dataset):
         filename = os.path.join(self.dataset_folder, self.files[index])
         pc = self.prepare_data(filename,
                                self.n_points,
-                               fixed_num_points=self.fixed_num_points)
+                               fixed_num_points=self.fixed_num_points,
+                               use_ground=self.use_ground,
+                               z_norm=self.z_norm)
 
-        labels = self.get_labels(pc)
+        labels = self.get_labels(pc, use_ground=self.use_ground)
         # drop the class column (3)
         pc = torch.cat((pc[:, :3], pc[:, 4:6]), dim=1)
 
@@ -259,26 +289,40 @@ class DalesDataset(data.Dataset):
     @staticmethod
     def prepare_data(point_file,
                      number_of_points=None,
-                     fixed_num_points=True):
+                     fixed_num_points=True,
+                     use_ground=True,
+                     z_norm='elevation'):
         """
-        Load a window, resample it and normalize: x/y to [-1, 1], z / 200, return number and number of returns / 7.
+        Load a window, optionally drop ground, resample it and normalize: x/y to [-1, 1], z (see `z_norm`),
+        return number and number of returns / 7.
 
         :param point_file: str, path of the .pt window
         :param number_of_points: int or None, target number of points (used when fixed_num_points)
         :param fixed_num_points: bool, resample to number_of_points
+        :param use_ground: bool, keep ground points (raw class 1)
+        :param z_norm: str, 'elevation' (z / 200) or 'minmax' (z scaled to [0, 1] per cloud)
         :return: torch.Tensor [n_points, 6]
         """
+        if z_norm not in ('elevation', 'minmax'):
+            raise ValueError(f'unknown z_norm {z_norm!r}')
         with open(point_file, 'rb') as f:
             # float64 keeps the 1 cm precision of absolute UTM coordinates until x, y are normalized
             pc = torch.load(f, map_location='cpu', weights_only=True).numpy().astype(np.float64)  # [points, dims]
+
+        if not use_ground:
+            pc = pc[pc[:, 3] != DalesDataset.GROUND]
+            if len(pc) == 0:
+                raise ValueError(f'{point_file} has no non-ground points; leave it out of the split lists')
 
         if fixed_num_points:
             pc = resample(pc, number_of_points)
 
         # Normalize x,y between -1 and 1
         pc = normalize_xy(pc)
-        # normalize z between 0 1
-        pc[:, 2] = pc[:, 2] / 200.
+        if z_norm == 'minmax':
+            pc = normalize_z_minmax(pc)
+        else:
+            pc[:, 2] = pc[:, 2] / 200.  # absolute elevation: DALES is flat enough
         # normalize return number and number of returns between 0 1
         pc[:, 4] = pc[:, 4] / 7.
         pc[:, 5] = pc[:, 5] / 7.
@@ -286,7 +330,7 @@ class DalesDataset(data.Dataset):
         return torch.from_numpy(pc.astype(np.float32))
 
     @staticmethod
-    def get_labels(pc):
+    def get_labels(pc, use_ground=True):
         """
         Segmentation labels (see `DATASETS['dales']['class_names']`), raw DALES class - 1:
         0 -> ground
@@ -298,15 +342,31 @@ class DalesDataset(data.Dataset):
         6 -> poles
         7 -> buildings
         -1 -> unknown (raw class 0), ignored
+        With use_ground=False: raw class - 2 (0 vegetation ... 6 buildings, see `DATASETS['dales_noground']`),
+        ground -> -1.
 
         :param pc: torch.Tensor or np.ndarray [n_points, dim], raw DALES classes in column 3
+        :param use_ground: bool, label map with (8 classes) or without (7 classes) ground
         :return labels: LongTensor [n_points]
         """
         # index the lookup table with the raw codes
-        return DalesDataset.LABEL_MAP[torch.as_tensor(pc[:, 3]).long()]
+        label_map = DalesDataset.LABEL_MAP if use_ground else DalesDataset.LABEL_MAP_NO_GROUND
+        return label_map[torch.as_tensor(pc[:, 3]).long()]
 
 
 # ------------------------------------------------ SETTINGS ------------------------------------------------
+
+# Approximate number of points per class in DALES, for deriving class weights.
+# Keyed by name because the order differs from DATASETS['dales']['class_names']; no count is given for trucks.
+DALES_POINTS_PER_CLASS = {
+    'ground': 178e6,
+    'power_lines': 0.8e6,
+    'poles': 0.28e6,
+    'vegetation': 121e6,
+    'fences': 2e6,
+    'buildings': 57e6,
+    'cars': 6e6,
+}
 
 DATASETS = {
     'cat3': {
@@ -344,6 +404,28 @@ DATASETS = {
         'batch_size': 16,
         'epochs': 150,
     },
+    'dales_noground': {
+        # DALES without ground points and with z min-max scaled to [0, 1] per cloud
+        'dataset_class': DalesDataset,
+        'dataset_kwargs': {'use_ground': False, 'z_norm': 'minmax'},
+        # labels produced by DalesDataset.get_labels(use_ground=False)
+        'class_names': ['vegetation', 'cars', 'trucks', 'power_lines', 'fences', 'poles', 'buildings'],
+        'channels_in': 5,
+        'block_id': dales_block_id,
+        # lists without (almost) all-ground windows: generate_dales_train_lists.py --no_ground
+        'path_list_files': 'train_test_files/dales_25x25_noground_barlow_10',
+        'ssl_list': 'train_cls_files.txt',
+        'ssl_add_labeled': True,
+        # more than VIEW_POINTS (4096), so the two views (first and last 4096 points) are different subsamplings
+        'ssl_number_of_points': 5000,
+        'ssl_max_epochs': 150,
+        # double weight on classes with < 1% of the non-ground points (trucks 0.25%, power lines 0.42%,
+        # fences 0.85%, poles 0.16% of the labeled 10% training points; cars 1.4%)
+        'class_weights': [1, 1, 2, 2, 2, 2, 1],
+        'milestones': [50, 300],
+        'batch_size': 16,
+        'epochs': 150,
+    },
 }
 
 
@@ -352,7 +434,7 @@ def make_dataset(name, dataset_folder, files, number_of_points, fixed_num_points
     """
     Build the dataset class registered under `name` in DATASETS.
 
-    :param name: str, key of DATASETS ('cat3' or 'dales')
+    :param name: str, key of DATASETS
     :param dataset_folder: str, folder with the .pt windows
     :param files: list of str, window file names
     :param number_of_points: int or None, points per window
@@ -362,4 +444,5 @@ def make_dataset(name, dataset_folder, files, number_of_points, fixed_num_points
     """
     config = DATASETS[name]
     return config['dataset_class'](dataset_folder=dataset_folder, task=task, number_of_points=number_of_points,
-                                   files=files, fixed_num_points=fixed_num_points)
+                                   files=files, fixed_num_points=fixed_num_points,
+                                   **config.get('dataset_kwargs', {}))

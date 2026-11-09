@@ -85,3 +85,17 @@ def test_split_lists_are_nested_and_disjoint():
         assert not set(s['val']) & set(s['train'])
         assert set(s['val']) | set(s['train']) == set(train)
         assert s['test'] == sorted(test)
+
+
+def test_drop_ground_windows_keeps_nesting():
+    """Filtering all-ground windows keeps the labeled sets nested and keeps every test window with points."""
+    train = [f'5145_54470_w{i}.pt' for i in range(1, 401)]
+    test = [f'5080_54400_w{i}.pt' for i in range(1, 11)]
+    train_counts = {f: (i % 7) * 30 for i, f in enumerate(train)}  # 0, 30, ..., 180 non-ground points
+    test_counts = {f: i for i, f in enumerate(test)}  # the first test window is all ground
+    splits = lists.drop_ground_windows(lists.make_splits(train, test, [10, 20, 50], seed=4),
+                                       train_counts, test_counts, min_non_ground=100)
+    assert set(splits[10]['val']) <= set(splits[20]['val']) <= set(splits[50]['val'])
+    for s in splits.values():
+        assert all(train_counts[f] >= 100 for f in s['train'] + s['val'])
+        assert set(s['test']) == set(test) - {test[0]}

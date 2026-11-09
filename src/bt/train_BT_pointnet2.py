@@ -5,12 +5,13 @@ import logging
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
 from src.datasets import BarlowTwinsDataset
 from src.models.barlow_twins import BarlowTwinsPN2, OnlineFineTunerClassifier
 from src.models.pointnet2_sem_seg import PointNet2
-from src.utils.train_utils import load_checkpoint, read_list, seed_worker
+from src.utils.mlflow_utils import add_mlflow_args, experiment_name, lightning_loggers
+from src.utils.train_utils import load_checkpoint, read_list, seed_worker, timestamp
 
 NUM_SEG_CLASSES = 6
 NUM_PROBE_CLASSES = 4  # online linear probe on the cloud-level labels of BarlowTwinsDataset (classification task)
@@ -45,6 +46,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='src/bt/checkpoints_PN2',
                         help='folder for Lightning checkpoints and logs')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
+    add_mlflow_args(parser)
     return parser.parse_args()
 
 
@@ -101,10 +103,14 @@ def main(args):
     online_finetuner = OnlineFineTunerClassifier(encoder_output_dim=args.encoder_out_dim,
                                                  num_classes=NUM_PROBE_CLASSES)
     checkpoint_callback = ModelCheckpoint(save_top_k=100, dirpath=args.output_dir, monitor='val_loss')
+    loggers = lightning_loggers(args.output_dir, args.mlflow_uri,
+                                experiment_name(args.mlflow_experiment, 'cat3'),
+                                run_name=f'pretrain_PointNet++_{timestamp()}', params=vars(args))
     trainer = Trainer(max_epochs=args.max_epochs,
                       accelerator='auto',
                       devices=1,
-                      callbacks=[checkpoint_callback, online_finetuner],
+                      callbacks=[checkpoint_callback, online_finetuner, LearningRateMonitor('step')],
+                      logger=loggers,
                       default_root_dir=args.output_dir)
     torch.set_float32_matmul_precision('medium')
     trainer.fit(model, train_loader, val_loader)

@@ -5,12 +5,13 @@ import logging
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
 from src.datasets import DATASETS, make_dataset
 from src.models.barlow_twins import BarlowTwins, OnlineFineTuner
 from src.models.pointnet import SegmentationPointNet
-from src.utils.train_utils import load_checkpoint, read_list, seed_worker
+from src.utils.mlflow_utils import add_mlflow_args, experiment_name, lightning_loggers
+from src.utils.train_utils import load_checkpoint, read_list, seed_worker, timestamp
 
 ENCODER_OUT_DIM = 1024
 
@@ -36,7 +37,7 @@ def parse_args():
                         help='optional supervised PointNet checkpoint (.pth) to initialise the encoder')
     parser.add_argument('--number_of_points', type=int, default=None,
                         help='points sampled per cloud; the two views take the first and last 4096 '
-                             '(default: 4500 for cat3, 4096 for dales)')
+                             '(default: 4500 for cat3, 4096 for dales, 5000 for dales_noground)')
     parser.add_argument('--batch_size', type=int, default=150, help='batch size')
     parser.add_argument('--max_epochs', type=int, default=None, help='number of epochs (default: 300 cat3, 150 dales)')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='learning rate')
@@ -46,6 +47,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default=None,
                         help='folder for Lightning checkpoints and logs (default: src/bt/checkpoints_<dataset>)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
+    add_mlflow_args(parser)
     args = parser.parse_args()
 
     config = DATASETS[args.dataset]
@@ -105,10 +107,14 @@ def main(args):
 
     online_finetuner = OnlineFineTuner(encoder_output_dim=ENCODER_OUT_DIM, num_classes=num_classes)
     checkpoint_callback = ModelCheckpoint(save_top_k=100, dirpath=args.output_dir, monitor='val_loss')
+    loggers = lightning_loggers(args.output_dir, args.mlflow_uri,
+                                experiment_name(args.mlflow_experiment, args.dataset),
+                                run_name=f'pretrain_PointNet_{timestamp()}', params=vars(args))
     trainer = Trainer(max_epochs=args.max_epochs,
                       accelerator='auto',
                       devices=1,
-                      callbacks=[checkpoint_callback, online_finetuner],
+                      callbacks=[checkpoint_callback, online_finetuner, LearningRateMonitor('step')],
+                      logger=loggers,
                       default_root_dir=args.output_dir)
     torch.set_float32_matmul_precision('medium')
     trainer.fit(model, train_loader, val_loader)

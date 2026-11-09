@@ -72,3 +72,12 @@ def test_rotations_agree_and_keep_z():
     assert np.allclose(rotated, rotated_t.numpy(), atol=1e-5)
     assert np.allclose(rotated[:, :, 2], pc[:, :, 2])
     assert np.allclose(np.linalg.norm(rotated[:, :, :2], axis=-1), np.linalg.norm(pc[:, :, :2], axis=-1), atol=1e-5)
+
+
+def test_mlflow_run_disabled_without_uri():
+    """Without a tracking URI every MLflowRun call is a no-op (mlflow is not needed)."""
+    from src.utils.mlflow_utils import MLflowRun
+    with MLflowRun(None, 'exp', params={'a': 1}) as run:
+        run.log_metrics({'loss': 1.0, 'iou': float('nan')}, step=0)
+        run.set_tags({'t': 'x'})
+    assert run.run_id is None and not run.enabled

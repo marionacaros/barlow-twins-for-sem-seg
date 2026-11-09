@@ -11,6 +11,7 @@ from progressbar import progressbar
 from src.datasets import DATASETS, make_dataset
 from src.models.pointnet import SegmentationPointNet
 from src.utils.get_metrics import SegmentationMetrics, report_segmentation
+from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name, segmentation_metrics
 from src.utils.train_utils import get_device, load_checkpoint, read_list, set_seed
 from src.utils.utils_plot import CAT3_COLORS, plot_predictions
 
@@ -22,7 +23,9 @@ def test(dataset,
          model_checkpoint,
          path_list_files,
          device,
-         plot=False):
+         plot=False,
+         mlflow_uri=None,
+         mlflow_experiment=None):
     """
     Evaluate a fine-tuned PointNet on full test windows (batch size 1), print per-class IoU and append the results to
     <output_folder>/IoU-results-<dataset>.csv.
@@ -35,6 +38,9 @@ def test(dataset,
     :param path_list_files: str, folder with test_cls_files.txt
     :param device: str, 'cuda' or 'cpu'
     :param plot: bool, save a prediction plot per window
+    :param mlflow_uri: str or None, MLflow tracking URI; the test metrics are added to the fine-tuning run stored
+        in the checkpoint (or to a new run)
+    :param mlflow_experiment: str or None, MLflow experiment of a new run (default: barlow_twins_<dataset>)
     """
     start_time = time.time()
     config = DATASETS[dataset]
@@ -88,6 +94,11 @@ def test(dataset,
     report_segmentation(metrics, class_names, model_name, n_params, round((time.time() - start_time) / 60, 3),
                         checkpoint['number_of_points'], os.path.join(output_folder, f'IoU-results-{dataset}.csv'))
 
+    with MLflowRun(mlflow_uri, experiment_name(mlflow_experiment, dataset), run_name=f'test_{model_name}',
+                   run_id=checkpoint.get('mlflow_run_id')) as run:
+        run.log_metrics(segmentation_metrics(metrics, class_names, 'test'))
+        run.set_tags({'test_checkpoint': model_checkpoint, 'test_list': path_list_files})
+
 
 def parse_args():
     """
@@ -106,6 +117,7 @@ def parse_args():
     parser.add_argument('--plot', action='store_true', help='save a prediction plot per test window')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
+    add_mlflow_args(parser)
     return parser.parse_args()
 
 
@@ -126,7 +138,9 @@ def main(args):
          args.model_checkpoint,
          args.path_list_files or DATASETS[args.dataset]['path_list_files'],
          get_device(args.device),
-         args.plot)
+         args.plot,
+         args.mlflow_uri,
+         args.mlflow_experiment)
 
 
 if __name__ == '__main__':
