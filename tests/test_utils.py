@@ -9,6 +9,7 @@ from src.utils.utils import rotate_point_cloud_z, torch_rotate_point_cloud_z
 
 
 def test_metrics_perfect_and_absent_class():
+    """Perfect predictions give IoU 1; an absent class gives nan."""
     metrics = SegmentationMetrics(num_classes=3)
     metrics.update(np.array([0, 0, 1, 1]), np.array([0, 0, 1, 1]))
     iou = metrics.iou_per_class()
@@ -18,6 +19,7 @@ def test_metrics_perfect_and_absent_class():
 
 
 def test_metrics_split_level_vs_per_sample():
+    """Split-level IoU differs from the legacy per-sample average."""
     metrics = SegmentationMetrics(num_classes=2)
     metrics.update(np.array([1, 1, 1, 1]), np.array([1, 1, 1, 1]))  # class 1 IoU 1.0
     metrics.update(np.array([0, 0, 0, 0]), np.array([1, 0, 0, 0]))  # class 1 IoU 0.0
@@ -27,6 +29,7 @@ def test_metrics_split_level_vs_per_sample():
 
 
 def test_metrics_ignore_index():
+    """Targets equal to ignore_index are not counted."""
     metrics = SegmentationMetrics(num_classes=2)
     metrics.update(torch.tensor([0, 1, 1]), torch.tensor([0, 1, -1]))
     assert metrics.confusion.sum() == 2
@@ -34,12 +37,14 @@ def test_metrics_ignore_index():
 
 
 def test_block_ids():
+    """Block ids are parsed from CAT3 and DALES file names."""
     assert cat3_block_id('pc_0_RIBERA_pt436662_w2119.pt') == 'pt436662'
     assert cat3_block_id('/data/tower_v11_CAT3_504678_w11.pt') == '504678'
     assert dales_block_id('5140_54390_w34.pt') == '5140_54390'
 
 
 def test_split_by_block_has_no_shared_blocks():
+    """No block is in both train and val, and the split is deterministic."""
     files = [f'pc_0_CAT3_{b}_w{w}.pt' for b in range(10) for w in range(5)]
     train, val = split_by_block(files, cat3_block_id, val_fraction=0.2, seed=1)
     assert sorted(train + val) == sorted(files)
@@ -50,12 +55,14 @@ def test_split_by_block_has_no_shared_blocks():
 
 
 def test_split_by_block_keeps_a_training_block():
+    """At least one block always stays in train."""
     files = ['pc_0_CAT3_1_w0.pt', 'pc_0_CAT3_2_w0.pt']
     train, val = split_by_block(files, cat3_block_id, val_fraction=0.9)
     assert len(train) == 1 and len(val) == 1
 
 
 def test_rotations_agree_and_keep_z():
+    """numpy and torch rotations agree, keep z and preserve xy norms."""
     pc = np.random.default_rng(0).random((2, 50, 3)).astype(np.float32)
     angle = 0.7
     rotated = rotate_point_cloud_z(pc, rotation_angle=angle)

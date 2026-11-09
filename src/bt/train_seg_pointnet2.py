@@ -21,12 +21,22 @@ seg_label_to_cat = dict(enumerate(classes))
 
 
 def inplace_relu(m):
+    """
+    Make ReLU modules in-place (use with `model.apply`).
+
+    :param m: torch.nn.Module
+    """
     classname = m.__class__.__name__
     if classname.find('ReLU') != -1:
         m.inplace = True
 
 
 def parse_args():
+    """
+    Parse the command line.
+
+    :return: argparse.Namespace
+    """
     parser = argparse.ArgumentParser('Fine-tune PointNet++ for semantic segmentation on LiDAR-CAT3.')
     parser.add_argument('--batch_size', type=int, default=32, help='batch size during training [default: 32]')
     parser.add_argument('--epoch', default=100, type=int, help='epochs to run [default: 100]')
@@ -55,6 +65,12 @@ def parse_args():
 
 
 def main(args):
+    """
+    Fine-tune PointNet++ for LiDAR-CAT3 semantic segmentation, optionally from a Barlow Twins checkpoint.
+    Logs and checkpoints go to <log_root>/<log_dir>.
+
+    :param args: argparse.Namespace from `parse_args`
+    """
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     device = get_device(args.device)
     set_seed(args.seed)
@@ -78,6 +94,11 @@ def main(args):
     logger.addHandler(file_handler)
 
     def log_string(msg):
+        """
+        Write `msg` to the run log file and print it.
+
+        :param msg: str or any printable object
+        """
         logger.info(msg)
         print(msg)
 
@@ -124,6 +145,11 @@ def main(args):
     classifier.apply(inplace_relu)
 
     def weights_init(m):
+        """
+        Xavier-normal weights and zero bias for Conv2d and Linear layers (use with `model.apply`).
+
+        :param m: torch.nn.Module
+        """
         classname = m.__class__.__name__
         if classname.find('Conv2d') != -1:
             torch.nn.init.xavier_normal_(m.weight.data)
@@ -163,6 +189,12 @@ def main(args):
     scheduler = MultiStepLR(optimizer, milestones=[50, 150], gamma=0.5)
 
     def bn_momentum_adjust(m, momentum):
+        """
+        Set the momentum of BatchNorm1d/BatchNorm2d layers.
+
+        :param m: torch.nn.Module
+        :param momentum: float
+        """
         if isinstance(m, torch.nn.BatchNorm2d) or isinstance(m, torch.nn.BatchNorm1d):
             m.momentum = momentum
 

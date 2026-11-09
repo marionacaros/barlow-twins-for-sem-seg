@@ -20,9 +20,10 @@ NUM_CPUS = 20
 
 def read_las_files(path):
     """
+    Read every LAS file in a folder.
 
-    :param path: path containing LAS files
-    :return: dict with [x,y,z,class]
+    :param path: str, folder containing LAS files
+    :return: dict {file name: np.ndarray [4, n_points] (x, y, z, class)}
     """
     dict_pc = {}
     files = glob.glob(os.path.join(path, '*.las'))
@@ -37,6 +38,15 @@ def read_las_files(path):
 
 
 def store_las_file_from_pc(pc, fileName, path_las_dir, dataset):
+    """
+    Write a window to <path_las_dir>/<fileName>.las and, unless `dataset` is 'BDN', its NIR values to
+    <fileName>_NIR.pkl (keyed by the md5 hash of 'x_y_z').
+
+    :param pc: np.ndarray [9, n_points] (x, y, z, class, intensity, R, G, B, NIR)
+    :param fileName: str, output file name without extension
+    :param path_las_dir: str, output folder
+    :param dataset: str, dataset name
+    """
     # 1. Create a new header
     header = laspy.LasHeader(point_format=3, version="1.4")  # we need this format for processing with PDAL
     # header.add_extra_dim(laspy.ExtraBytesParams(name="nir_extra", type=np.int32))
@@ -79,7 +89,9 @@ def store_las_file_from_pc(pc, fileName, path_las_dir, dataset):
 
 def get_all_windows(path):
     """
-    :param path: path str where LAS files are stored
+    Split all LAS files of a folder into windows in parallel (uses the globals W_SIZE and SAVE_PATH).
+
+    :param path: str, folder where LAS files are stored
     """
     logging.info('Loading LAS files')
     files = glob.glob(os.path.join(path, '*.las'))
@@ -93,6 +105,12 @@ def get_all_windows(path):
 
 
 def parallel_proc(files_list, num_cpus):
+    """
+    Run `split_pointcloud` on every file with a multiprocessing pool.
+
+    :param files_list: list of str, LAS file paths
+    :param num_cpus: int, number of processes
+    """
     p = multiprocessing.Pool(processes=num_cpus)
 
     for _ in progressbar(p.imap_unordered(split_pointcloud, files_list, 1),
@@ -104,8 +122,9 @@ def parallel_proc(files_list, num_cpus):
 
 def split_pointcloud(f):
     """
-    Split point cloud into windows of size w_size with 5 meters overlap
-    :param f: file
+    Split a LAS tile into W_SIZE windows with 5 m overlap and store each one with `store_las_file_from_pc`.
+
+    :param f: str, path of the LAS file
     """
     dir_name = 'all_w' + str(W_SIZE[0]) + 'x' + str(W_SIZE[1])
     f_name = f.split('/')[-1].split('.')[0]
@@ -121,7 +140,6 @@ def split_pointcloud(f):
                         red, green, blue,
                         nir))
     i_w = 0
-    c_tow = 0
     x_min, y_min, z_min = coords[0].min(), coords[1].min(), coords[2].min()
     x_max, y_max, z_max = coords[0].max(), coords[1].max(), coords[2].max()
 
@@ -143,7 +161,7 @@ def split_pointcloud(f):
                     i_w += 1
 
     f = open('pointclouds_per_block_' + str(DATASET) + '.txt', 'a')
-    f.write(f'{f_name}, {i_w}, {c_tow}\n')
+    f.write(f'{f_name}, {i_w}\n')
     f.close()
 
 

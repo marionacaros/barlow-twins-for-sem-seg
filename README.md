@@ -130,11 +130,11 @@ All scripts take `--dataset_folder`, a flat folder of `.pt` files with one point
 
 When a window is loaded, its points are sampled (without replacement) or duplicated to a fixed count, and x and y are scaled to [-1, 1].
 - **LiDAR-CAT3:** unclassified and ground points are dropped, and z is replaced by height above ground / 2, clipped to [0, 1]. The model gets 9 features.
-- **DALES:** z is divided by 200 and the return attributes by 7. The model gets 5 features.
+- **DALES:** windows are stored in float64, so absolute UTM coordinates keep their 1 cm precision until x and y are normalized. z stays absolute elevation (the area is flat), divided by 200, and the return attributes are divided by 7. The model gets 5 features. It is trained on all 8 DALES classes (label = DALES code − 1); unknown points (class 0) are ignored. Classes with less than 1% of the points (cars, trucks, power lines, fences, poles) get double weight in the loss.
 
 ### Split lists
 
-`train_test_files/<dataset>_40x40_barlow_<pct>/` holds the lists for each share of labeled data.
+`train_test_files/<dataset>_<size>_barlow_<pct>/` holds the lists for each share of labeled data (`RGBN_40x40_*` for LiDAR-CAT3, `dales_25x25_*` for DALES).
 
 | File | Content |
 |---|---|
@@ -143,16 +143,20 @@ When a window is loaded, its points are sampled (without replacement) or duplica
 | `test_cls_files.txt` | Test windows. They are the same for every share of labeled data. |
 | `train_reduced_files_semdedup0996.txt` | (LiDAR-CAT3) Unlabeled windows left after semantic deduplication with threshold 0.996, used for Barlow Twins pre-training. |
 
-The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._10` holds the 12% labeled split used in the paper. `RGBN_..._p1` has the same lists plus `val_object_files.txt`. LiDAR-CAT3 test and validation windows come from separate blocks.
+The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._10` holds the 12% labeled split used in the paper. `RGBN_..._p1` has the same lists plus `val_object_files.txt`. LiDAR-CAT3 test and validation windows come from separate blocks. The DALES lists cover every 25 m window of every tile: all 4,400 windows of the 11 test tiles are test windows, and the labeled sets are nested (10% ⊂ 20% ⊂ 50% of the 11,600 train windows). Rebuild them with `proc/dales_data/generate_dales_train_lists.py`.
 
 ## Usage
 
 The pipeline is: preprocessing (`proc/`) → split lists → Barlow Twins pre-training → fine-tuning → testing. The PointNet scripts take `--dataset cat3` (the default) or `--dataset dales`. Each dataset has its own default split folder, class weights and number of epochs.
 
 ```bash
-# 0. Preprocessing (LiDAR-CAT3; for DALES run proc/dales_data/1_split_LAS_DALES.py)
+# 0. Preprocessing, LiDAR-CAT3
 python proc/cat3_data/1_split_las.py --LAS_files_path <las_dir> --out_path <windows_dir>
 python proc/cat3_data/2_preprocessing.py --in_path <windows_dir> --out_path <data_dir>
+# 0. Preprocessing, DALES: 25 m float64 windows in <dales_dir>/{train,test}, then the split lists.
+#    Use --dataset_folder <dales_dir>/train for steps 1-2 and <dales_dir>/test for step 3.
+python proc/dales_data/1_split_LAS_DALES.py --LAS_files_path <dales_las_dir> --out_path <dales_dir>
+python proc/dales_data/generate_dales_train_lists.py --dataset_folder <dales_dir>
 
 # 1. Barlow Twins self-supervised pre-training
 PYTHONPATH=. python src/bt/train_BT_pointnet.py --dataset cat3 --dataset_folder <data_dir>

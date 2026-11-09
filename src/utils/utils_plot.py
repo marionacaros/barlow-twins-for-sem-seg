@@ -23,12 +23,15 @@ def plot_predictions(pc, preds, targets, miou, name, class_names, colors=None, p
     """
     Save a side-by-side 3D plot of predicted and ground-truth labels to <path_plot>/<name>.png.
 
-    :param pc: [n_points, dims] array, columns 0-2 are x, y, z
-    :param preds: [n_points] predicted labels
-    :param targets: [n_points] ground-truth labels
-    :param miou: mean IoU shown in the title (or None)
-    :param class_names: one name per label
-    :param colors: one RGBA colour per label (default: tab10)
+    :param pc: np.ndarray [n_points, dims], columns 0-2 are x, y, z
+    :param preds: np.ndarray [n_points], predicted labels
+    :param targets: np.ndarray [n_points], ground-truth labels
+    :param miou: float or None, mean IoU shown in the title
+    :param name: str, output file name without extension
+    :param class_names: list of str, one name per label
+    :param colors: list of RGBA tuples or None, one colour per label (default: tab10)
+    :param path_plot: str, output folder ('' does not save)
+    :param point_size: float, marker size
     """
     n_classes = len(class_names)
     if colors is None:

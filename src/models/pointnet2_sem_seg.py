@@ -5,6 +5,12 @@ from src.models.pointnet2_utils import PointNetSetAbstraction, PointNetFeaturePr
 
 class PointNetAbstractionEncoder(nn.Module):
     def __init__(self, is_barlow=False, group_all=False):
+        """
+        Four PointNet++ set-abstraction layers.
+
+        :param is_barlow: bool, return only the last-level features, flattened to [batch, 512]
+        :param group_all: bool, the last layer groups all points into one global feature
+        """
         super(PointNetAbstractionEncoder, self).__init__()
 
         self.is_bt = is_barlow
@@ -14,6 +20,10 @@ class PointNetAbstractionEncoder(nn.Module):
         self.sa4 = PointNetSetAbstraction(16, 0.8, 32, 256 + 3, [256, 256, 512], group_all)
 
     def forward(self, xyz):
+        """
+        :param xyz: torch.Tensor [batch, 9, n_points], channels 0-2 are x, y, z
+        :return: with is_barlow: torch.Tensor [batch, 512]; otherwise the (xyz, features) pairs of levels 1-4
+        """
         l0_points = xyz
         l0_xyz = xyz[:, :3, :]
 
@@ -33,6 +43,11 @@ class PointNetAbstractionEncoder(nn.Module):
 class PointNet2(nn.Module):
 
     def __init__(self, num_classes, is_barlow=False, group_all=False):
+        """
+        :param num_classes: int
+        :param is_barlow: bool, see `PointNetAbstractionEncoder`
+        :param group_all: bool, see `PointNetAbstractionEncoder`
+        """
         super(PointNet2, self).__init__()
 
         self.encoder = PointNetAbstractionEncoder(is_barlow=is_barlow, group_all=group_all)
@@ -47,7 +62,10 @@ class PointNet2(nn.Module):
         self.conv2 = nn.Conv1d(128, num_classes, 1)
 
     def forward(self, pc):
-
+        """
+        :param pc: torch.Tensor [batch, 9, n_points]
+        :return: log-probabilities [batch, n_points, num_classes], level-4 features [batch, 512, 16]
+        """
         l0_xyz = pc[:, :3, :]
         l1_xyz, l1_points, l2_xyz, l2_points, l3_xyz, l3_points, l4_xyz, l4_points = self.encoder(pc)
 
@@ -107,9 +125,17 @@ class PointNet2(nn.Module):
 
 class get_loss(nn.Module):
     def __init__(self):
+        """Class-weighted NLL loss on PointNet++ log-probabilities."""
         super(get_loss, self).__init__()
 
     def forward(self, pred, target, trans_feat, weight):
+        """
+        :param pred: torch.Tensor [n, num_classes], log-probabilities
+        :param target: LongTensor [n]
+        :param trans_feat: unused
+        :param weight: torch.Tensor [num_classes] or None, class weights
+        :return: scalar torch.Tensor
+        """
         total_loss = F.nll_loss(pred, target, weight=weight)
 
         return total_loss

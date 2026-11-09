@@ -6,6 +6,13 @@ import torch.nn.functional as F
 class TransformationNet(nn.Module):
 
     def __init__(self, input_dim, output_dim, device):
+        """
+        T-Net that predicts an [output_dim, output_dim] transform.
+
+        :param input_dim: int, input channels
+        :param output_dim: int, size of the square transform
+        :param device: str or torch.device, where the identity matrix is created
+        """
         super(TransformationNet, self).__init__()
         self.output_dim = output_dim
         self.device = device
@@ -25,6 +32,10 @@ class TransformationNet(nn.Module):
         self.fc_3 = nn.Linear(256, self.output_dim * self.output_dim)
 
     def forward(self, x):
+        """
+        :param x: torch.Tensor [batch, n_points, input_dim]
+        :return: torch.Tensor [batch, output_dim, output_dim] (identity + predicted offset)
+        """
         num_points = x.shape[1]
         x = x.transpose(2, 1)
         x = F.relu(self.bn_1(self.conv_1(x)))
@@ -52,6 +63,14 @@ class BasePointNet(nn.Module):
                  device='cpu',
                  is_barlow=False,
                  channels_in=9):
+        """
+        :param point_dimension: int, coordinate channels fed to the input T-Net (3)
+        :param return_local_features: bool, return per-point local + global features (for segmentation)
+        :param dataset: str, unused
+        :param device: str or torch.device
+        :param is_barlow: bool, return (global, local + global, transform) for Barlow Twins
+        :param channels_in: int, input feature channels
+        """
         super(BasePointNet, self).__init__()
         self.dataset = dataset
         self.point_dimension = point_dimension
@@ -72,6 +91,13 @@ class BasePointNet(nn.Module):
         self.bn_5 = nn.BatchNorm1d(1024)
 
     def forward(self, x):
+        """
+        :param x: torch.Tensor [batch, n_points, channels_in]
+        :return: with is_barlow: global [batch, 1024], features [batch, n_points, 1088],
+            feature transform [batch, 64, 64];
+            with return_local_features: features [batch, n_points, 1088], feature transform;
+            otherwise: global [batch, 1024], feature transform
+        """
         num_points = x.shape[1]  # torch.Size([BATCH, SAMPLES, DIMS])
 
         x_tnet = x[:, :, :self.point_dimension]  # [32, 4096, 3]
@@ -115,6 +141,14 @@ class SegmentationPointNet(nn.Module):
                  return_local_features=True,
                  is_barlow=False,
                  channels_in=9):
+        """
+        :param num_classes: int
+        :param point_dimension: int, coordinate channels (3)
+        :param device: str or torch.device
+        :param return_local_features: bool, must be True for segmentation
+        :param is_barlow: bool, the encoder returns the Barlow Twins outputs (use only as the SSL encoder)
+        :param channels_in: int, input feature channels (9 for cat3, 5 for dales)
+        """
         super(SegmentationPointNet, self).__init__()
         self.base_pointnet = BasePointNet(return_local_features=return_local_features,
                                           point_dimension=point_dimension,
@@ -132,6 +166,10 @@ class SegmentationPointNet(nn.Module):
         self.bn_3 = nn.BatchNorm1d(128)
 
     def forward(self, x):
+        """
+        :param x: torch.Tensor [batch, n_points, channels_in]
+        :return: logits [batch, num_classes, n_points], feature transform [batch, 64, 64]
+        """
         local_global_features, feature_transform = self.base_pointnet(x)
         x = local_global_features
         x = x.transpose(2, 1)

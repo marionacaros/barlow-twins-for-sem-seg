@@ -24,6 +24,18 @@ def test(dataset_folder,
          path_list_files,
          device,
          plot=False):
+    """
+    Evaluate a fine-tuned PointNet++ on full LiDAR-CAT3 test windows (batch size 1), print per-class IoU and append
+    the results to <output_folder>/IoU-results-cat3-pn2.csv.
+
+    :param dataset_folder: str, folder with the .pt windows
+    :param output_folder: str, folder for the CSV and the figures
+    :param number_of_workers: int, DataLoader workers
+    :param model_checkpoint: str, fine-tuned .pth checkpoint
+    :param path_list_files: str, folder with test_cls_files.txt
+    :param device: str, 'cuda' or 'cpu'
+    :param plot: bool, save plots of windows with > 2000 points that contain minority classes
+    """
     start_time = time.time()
     checkpoint = load_checkpoint(model_checkpoint, device)
     test_files = read_list(path_list_files, 'test_cls_files.txt')

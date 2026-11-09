@@ -33,7 +33,10 @@ test_files = {}
 
 
 def generate_list_files():
-
+    """
+    Collect the .pt windows of --dataset_folder, shuffle them and write the train/val/test lists to --out_dir.
+    Takes no arguments: it reads the parsed command-line `args`.
+    """
     # --------------------------------- DATASET BLOCKS PARTITION  -----------------------------------------------
     main_path = args.dataset_folder
     ext = '.pt'
@@ -66,6 +69,12 @@ def generate_list_files():
 
 
 def block_partition(list_f):
+    """
+    Assign the blocks of the given windows to train/val/test (tower blocks spread over the three splits, the rest to
+    train) and write the partition to dicts/w80x80/*.json.
+
+    :param list_f: list of str, window file paths
+    """
     rib_blocks = {'train': [], 'test': [], 'val': []}
     cat3_blocks = {'train': [], 'test': [], 'val': []}
     bdn_blocks = {'train': [], 'test': [], 'val': []}
@@ -152,6 +161,12 @@ def block_partition(list_f):
 
 
 def parallel_proc(files_list, num_cpus):
+    """
+    Run `split_data` on every file with a multiprocessing pool.
+
+    :param files_list: list of str, .pt window paths
+    :param num_cpus: int, number of processes
+    """
     p = multiprocessing.Pool(processes=num_cpus)
 
     for _ in progressbar(p.imap_unordered(split_data, files_list, 1),
@@ -162,6 +177,13 @@ def parallel_proc(files_list, num_cpus):
 
 
 def split_data(file, name='_cls_files'):
+    """
+    Append the window's file name to the train, val or test list of its block. 'pc' and 'lines' windows with fewer
+    than 2048 non-ground points are skipped.
+
+    :param file: str, path of a .pt window
+    :param name: str, suffix of the list files
+    """
     blockName = file.split('_')[-2]  # block ie pt440650
     filename = file.split('/')[-1]
     cat = filename.split('_')[0]

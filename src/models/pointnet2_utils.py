@@ -6,11 +6,24 @@ import numpy as np
 
 
 def timeit(tag, t):
+    """
+    Print the seconds elapsed since `t` and return the current time.
+
+    :param tag: str, label to print
+    :param t: float, start time from `time()`
+    :return: float
+    """
     print("{}: {}s".format(tag, time() - t))
     return time()
 
 
 def pc_normalize(pc):
+    """
+    Center a cloud on its centroid and scale it into the unit sphere.
+
+    :param pc: np.ndarray [n_points, 3]
+    :return: np.ndarray [n_points, 3]
+    """
     l = pc.shape[0]
     centroid = np.mean(pc, axis=0)
     pc = pc - centroid
@@ -21,19 +34,12 @@ def pc_normalize(pc):
 
 def square_distance(src, dst):
     """
-    Calculate Euclid distance between each two points.
+    Squared Euclidean distance between each pair of points:
+    dist = sum(src**2, -1) + sum(dst**2, -1) - 2 * src^T * dst
 
-    src^T * dst = xn * xm + yn * ym + zn * zm；
-    sum(src^2, dim=-1) = xn*xn + yn*yn + zn*zn;
-    sum(dst^2, dim=-1) = xm*xm + ym*ym + zm*zm;
-    dist = (xn - xm)^2 + (yn - ym)^2 + (zn - zm)^2
-         = sum(src**2,dim=-1)+sum(dst**2,dim=-1)-2*src^T*dst
-
-    Input:
-        src: source points, [B, N, C]
-        dst: target points, [B, M, C]
-    Output:
-        dist: per-point square distance, [B, N, M]
+    :param src: torch.Tensor [B, N, C], source points
+    :param dst: torch.Tensor [B, M, C], target points
+    :return: torch.Tensor [B, N, M]
     """
     B, N, _ = src.shape
     _, M, _ = dst.shape
@@ -45,12 +51,11 @@ def square_distance(src, dst):
 
 def index_points(points, idx):
     """
+    Gather points by index.
 
-    Input:
-        points: input points data, [B, N, C]
-        idx: sample index data, [B, S]
-    Return:
-        new_points:, indexed points data, [B, S, C]
+    :param points: torch.Tensor [B, N, C]
+    :param idx: LongTensor [B, S] (or [B, S, K])
+    :return: torch.Tensor [B, S, C] (or [B, S, K, C])
     """
     device = points.device
     B = points.shape[0]
@@ -65,11 +70,11 @@ def index_points(points, idx):
 
 def farthest_point_sample(xyz, npoint):
     """
-    Input:
-        xyz: pointcloud data, [B, N, 3]
-        npoint: number of samples
-    Return:
-        centroids: sampled pointcloud index, [B, npoint]
+    Farthest point sampling, starting from a random point.
+
+    :param xyz: torch.Tensor [B, N, 3]
+    :param npoint: int, number of samples
+    :return: LongTensor [B, npoint], indices of the sampled points
     """
     device = xyz.device
     B, N, C = xyz.shape
@@ -89,13 +94,13 @@ def farthest_point_sample(xyz, npoint):
 
 def query_ball_point(radius, nsample, xyz, new_xyz):
     """
-    Input:
-        radius: local region radius
-        nsample: max sample number in local region
-        xyz: all points, [B, N, 3]
-        new_xyz: query points, [B, S, 3]
-    Return:
-        group_idx: grouped points index, [B, S, nsample]
+    Indices of up to `nsample` points within `radius` of each query point (padded with the first neighbour).
+
+    :param radius: float, ball radius
+    :param nsample: int, maximum points per ball
+    :param xyz: torch.Tensor [B, N, 3], all points
+    :param new_xyz: torch.Tensor [B, S, 3], query points
+    :return: LongTensor [B, S, nsample]
     """
     device = xyz.device
     B, N, C = xyz.shape
@@ -112,15 +117,15 @@ def query_ball_point(radius, nsample, xyz, new_xyz):
 
 def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
     """
-    Input:
-        npoint:
-        radius:
-        nsample:
-        xyz: input points position data, [B, N, 3]
-        points: input points data, [B, N, D]
-    Return:
-        new_xyz: sampled points position data, [B, npoint, nsample, 3]
-        new_points: sampled points data, [B, npoint, nsample, 3+D]
+    Sample `npoint` centroids with farthest point sampling and group the points in a ball around each one.
+
+    :param npoint: int, number of centroids
+    :param radius: float, ball radius
+    :param nsample: int, points per group
+    :param xyz: torch.Tensor [B, N, 3], positions
+    :param points: torch.Tensor [B, N, D] or None, features
+    :param returnfps: bool, also return the grouped positions and the sampled indices
+    :return: new_xyz [B, npoint, 3], new_points [B, npoint, nsample, 3+D]
     """
     B, N, C = xyz.shape
     S = npoint
@@ -143,12 +148,11 @@ def sample_and_group(npoint, radius, nsample, xyz, points, returnfps=False):
 
 def sample_and_group_all(xyz, points):
     """
-    Input:
-        xyz: input points position data, [B, N, 3]
-        points: input points data, [B, N, D]
-    Return:
-        new_xyz: sampled points position data, [B, 1, 3]
-        new_points: sampled points data, [B, 1, N, 3+D]
+    Group all points into one region centred at the origin.
+
+    :param xyz: torch.Tensor [B, N, 3], positions
+    :param points: torch.Tensor [B, N, D] or None, features
+    :return: new_xyz [B, 1, 3] (zeros), new_points [B, 1, N, 3+D]
     """
     device = xyz.device
     B, N, C = xyz.shape
@@ -163,6 +167,14 @@ def sample_and_group_all(xyz, points):
 
 class PointNetSetAbstraction(nn.Module):
     def __init__(self, npoint, radius, nsample, in_channel, mlp, group_all):
+        """
+        :param npoint: int, number of centroids
+        :param radius: float, ball radius
+        :param nsample: int, points per group
+        :param in_channel: int, input channels (features + 3)
+        :param mlp: list of int, output channels of each shared MLP layer
+        :param group_all: bool, group all points into one region
+        """
         super(PointNetSetAbstraction, self).__init__()
         self.npoint = npoint
         self.radius = radius
@@ -178,12 +190,9 @@ class PointNetSetAbstraction(nn.Module):
 
     def forward(self, xyz, points):
         """
-        Input:
-            xyz: input points position data, [B, C, N]
-            points: input points data, [B, D, N]
-        Return:
-            new_xyz: sampled points position data, [B, C, S]
-            new_points_concat: sample points feature data, [B, D', S]
+        :param xyz: torch.Tensor [B, C, N], positions
+        :param points: torch.Tensor [B, D, N] or None, features
+        :return: new_xyz [B, C, S], new_points [B, D', S]
         """
         xyz = xyz.permute(0, 2, 1)
         if points is not None:
@@ -207,6 +216,15 @@ class PointNetSetAbstraction(nn.Module):
 
 class PointNetSetAbstractionMsg(nn.Module):
     def __init__(self, npoint, radius_list, nsample_list, in_channel, mlp_list):
+        """
+        Multi-scale grouping set abstraction.
+
+        :param npoint: int, number of centroids
+        :param radius_list: list of float, one ball radius per scale
+        :param nsample_list: list of int, points per group for each scale
+        :param in_channel: int, input feature channels (3 is added for xyz)
+        :param mlp_list: list of list of int, MLP channels for each scale
+        """
         super(PointNetSetAbstractionMsg, self).__init__()
         self.npoint = npoint
         self.radius_list = radius_list
@@ -226,12 +244,9 @@ class PointNetSetAbstractionMsg(nn.Module):
 
     def forward(self, xyz, points):
         """
-        Input:
-            xyz: input points position data, [B, C, N]
-            points: input points data, [B, D, N]
-        Return:
-            new_xyz: sampled points position data, [B, C, S]
-            new_points_concat: sample points feature data, [B, D', S]
+        :param xyz: torch.Tensor [B, C, N], positions
+        :param points: torch.Tensor [B, D, N] or None, features
+        :return: new_xyz [B, C, S], new_points_concat [B, D', S] (features of all scales concatenated)
         """
         xyz = xyz.permute(0, 2, 1)
         if points is not None:
@@ -267,6 +282,10 @@ class PointNetSetAbstractionMsg(nn.Module):
 
 class PointNetFeaturePropagation(nn.Module):
     def __init__(self, in_channel, mlp):
+        """
+        :param in_channel: int, channels of the skip features plus the interpolated features
+        :param mlp: list of int, output channels of each shared MLP layer
+        """
         super(PointNetFeaturePropagation, self).__init__()
         self.mlp_convs = nn.ModuleList()
         self.mlp_bns = nn.ModuleList()
@@ -278,13 +297,14 @@ class PointNetFeaturePropagation(nn.Module):
 
     def forward(self, xyz1, xyz2, points1, points2):
         """
-        Input:
-            xyz1: input points position data, [B, C, N]
-            xyz2: sampled input points position data, [B, C, S]
-            points1: input points data, [B, D, N]
-            points2: input points data, [B, D, S]
-        Return:
-            new_points: upsampled points data, [B, D', N]
+        Interpolate points2 onto xyz1 (inverse-distance weights of the 3 nearest neighbours), concatenate points1 and
+        apply the MLP.
+
+        :param xyz1: torch.Tensor [B, C, N], target positions
+        :param xyz2: torch.Tensor [B, C, S], source positions
+        :param points1: torch.Tensor [B, D1, N] or None, skip features
+        :param points2: torch.Tensor [B, D2, S], source features
+        :return: torch.Tensor [B, D', N]
         """
         xyz1 = xyz1.permute(0, 2, 1)
         xyz2 = xyz2.permute(0, 2, 1)

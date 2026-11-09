@@ -23,6 +23,19 @@ def test(dataset,
          path_list_files,
          device,
          plot=False):
+    """
+    Evaluate a fine-tuned PointNet on full test windows (batch size 1), print per-class IoU and append the results to
+    <output_folder>/IoU-results-<dataset>.csv.
+
+    :param dataset: str, 'cat3' or 'dales'
+    :param dataset_folder: str, folder with the .pt windows
+    :param output_folder: str, folder for the CSV and the figures
+    :param number_of_workers: int, DataLoader workers
+    :param model_checkpoint: str, fine-tuned .pth checkpoint
+    :param path_list_files: str, folder with test_cls_files.txt
+    :param device: str, 'cuda' or 'cpu'
+    :param plot: bool, save a prediction plot per window
+    """
     start_time = time.time()
     config = DATASETS[dataset]
     class_names = config['class_names']

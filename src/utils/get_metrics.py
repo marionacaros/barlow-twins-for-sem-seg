@@ -16,19 +16,24 @@ class SegmentationMetrics:
     """
 
     def __init__(self, num_classes, ignore_index=-1):
+        """
+        :param num_classes: int
+        :param ignore_index: int, target label that is skipped
+        """
         self.num_classes = num_classes
         self.ignore_index = ignore_index
         self.reset()
 
     def reset(self):
+        """Clear the confusion matrix and the per-sample IoU sums."""
         self.confusion = np.zeros((self.num_classes, self.num_classes), dtype=np.int64)
         self._sample_iou_sum = np.zeros(self.num_classes)
         self._sample_iou_count = np.zeros(self.num_classes, dtype=np.int64)
 
     def update(self, preds, targets):
         """
-        :param preds: predicted labels, any shape (tensor or array)
-        :param targets: target labels, same number of elements
+        :param preds: torch.Tensor or np.ndarray of int labels, any shape
+        :param targets: torch.Tensor or np.ndarray of int labels, same number of elements
         """
         preds = _to_numpy(preds).reshape(-1).astype(np.int64)
         targets = _to_numpy(targets).reshape(-1).astype(np.int64)
@@ -46,31 +51,60 @@ class SegmentationMetrics:
         self._sample_iou_count[present] += 1
 
     def iou_per_class(self):
-        """Dataset-level IoU per class; nan for classes absent from both predictions and targets."""
+        """
+        Dataset-level IoU per class; nan for classes absent from both predictions and targets.
+
+        :return: np.ndarray [num_classes]
+        """
         tp = np.diag(self.confusion).astype(np.float64)
         union = self.confusion.sum(0) + self.confusion.sum(1) - tp
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.where(union > 0, tp / union, np.nan)
 
     def mean_iou(self):
+        """
+        Mean dataset-level IoU over the classes that occur (nan if none).
+
+        :return: float
+        """
         iou = self.iou_per_class()
         return float(np.nanmean(iou)) if not np.all(np.isnan(iou)) else float('nan')
 
     def accuracy(self):
+        """
+        Overall point accuracy (nan if no points).
+
+        :return: float
+        """
         total = self.confusion.sum()
         return float(np.trace(self.confusion) / total) if total else float('nan')
 
     def sample_iou_per_class(self):
-        """Legacy definition: per-sample IoU averaged over the samples that contain each class."""
+        """
+        Legacy definition: per-sample IoU averaged over the samples that contain each class.
+
+        :return: np.ndarray [num_classes]
+        """
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.where(self._sample_iou_count > 0, self._sample_iou_sum / self._sample_iou_count, np.nan)
 
     def sample_mean_iou(self):
+        """
+        Mean legacy per-sample IoU over the classes that occur (nan if none).
+
+        :return: float
+        """
         iou = self.sample_iou_per_class()
         return float(np.nanmean(iou)) if not np.all(np.isnan(iou)) else float('nan')
 
 
 def _to_numpy(x):
+    """
+    Convert a tensor (on any device) or an array-like to a numpy array.
+
+    :param x: torch.Tensor or array-like
+    :return: np.ndarray
+    """
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
     return np.asarray(x)
@@ -80,6 +114,14 @@ def report_segmentation(metrics, class_names, model_name, n_params, elapsed_min,
     """
     Print dataset-level and legacy per-sample IoU of a SegmentationMetrics and append one row to `csv_path`
     (a header is written when the file is new). IoU values in the CSV are percentages.
+
+    :param metrics: SegmentationMetrics
+    :param class_names: list of str
+    :param model_name: str, first column of the row
+    :param n_params: int, number of model parameters
+    :param elapsed_min: float, run time in minutes
+    :param n_points: int, points per cloud
+    :param csv_path: str, CSV file to append to
     """
     iou = metrics.iou_per_class()
     sample_iou = metrics.sample_iou_per_class()

@@ -37,7 +37,12 @@ def remove_ground_and_outliers(file, max_intensity=5000, TH_1=3, TH_2=8):
     24 ➔ solapament
     135 (30) ➔ soroll del sensor
 
-    It stores torch files with preprocessed data
+    It stores torch files with preprocessed data (uses the globals max_z, n_points and out_path).
+
+    :param file: str, path of a window LAS file with HeightAboveGround and a matching <name>_NIR.pkl
+    :param max_intensity: int, intensity normalization constant
+    :param TH_1: int, unused
+    :param TH_2: int, unused
     """
 
     fileName = file.split('/')[-1].split('.')[0]
@@ -142,6 +147,12 @@ def remove_ground_and_outliers(file, max_intensity=5000, TH_1=3, TH_2=8):
 
 
 def parallel_proc(files_list, num_cpus):
+    """
+    Run `remove_ground_and_outliers` on every file with a multiprocessing pool.
+
+    :param files_list: list of str, LAS file paths
+    :param num_cpus: int, number of processes
+    """
     p = multiprocessing.Pool(processes=num_cpus)
 
     for _ in progressbar(p.imap_unordered(remove_ground_and_outliers, files_list, 1),

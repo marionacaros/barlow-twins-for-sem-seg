@@ -16,6 +16,11 @@ ENCODER_OUT_DIM = 1024
 
 
 def parse_args():
+    """
+    Parse the command line and fill the dataset-dependent defaults from DATASETS.
+
+    :return: argparse.Namespace
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='cat3', help='dataset')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
@@ -54,6 +59,11 @@ def parse_args():
 
 
 def main(args):
+    """
+    Pre-train the PointNet encoder with Barlow Twins and an online segmentation probe (PyTorch Lightning).
+
+    :param args: argparse.Namespace from `parse_args`
+    """
     logging.basicConfig(level=logging.INFO)
     pl.seed_everything(args.seed, workers=True)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

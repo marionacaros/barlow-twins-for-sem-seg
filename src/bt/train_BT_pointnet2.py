@@ -17,6 +17,11 @@ NUM_PROBE_CLASSES = 4  # online linear probe on the cloud-level labels of Barlow
 
 
 def parse_args():
+    """
+    Parse the command line.
+
+    :return: argparse.Namespace
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
     parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
@@ -45,6 +50,11 @@ def parse_args():
 
 
 def main(args):
+    """
+    Pre-train the PointNet++ encoder with Barlow Twins and an online classification probe (PyTorch Lightning).
+
+    :param args: argparse.Namespace from `parse_args`
+    """
     logging.basicConfig(level=logging.INFO)
     pl.seed_everything(args.seed, workers=True)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'

@@ -42,6 +42,28 @@ def train(dataset,
           log_dir,
           save_after_epoch,
           device):
+    """
+    Fine-tune PointNet for semantic segmentation, optionally starting from a Barlow Twins encoder. Logs to TensorBoard
+    and saves the checkpoint with the best validation loss.
+
+    :param dataset: str, 'cat3' or 'dales'
+    :param dataset_folder: str, folder with the .pt windows
+    :param path_list_files: str, folder with the split lists
+    :param labeled_list: str, list of labeled files inside path_list_files
+    :param n_points: int, points per cloud
+    :param batch_size: int
+    :param epochs: int
+    :param learning_rate: float
+    :param number_of_workers: int, DataLoader workers
+    :param model_checkpoint: str, Barlow Twins .ckpt ('' to train from scratch)
+    :param c_sample: bool, constrained sampling (cat3 only)
+    :param val_fraction: float, share of labeled files used for validation (split by block)
+    :param seed: int
+    :param checkpoint_dir: str, folder for checkpoints
+    :param log_dir: str, TensorBoard folder
+    :param save_after_epoch: int, also save every epoch after this one (-1: only the best)
+    :param device: str, 'cuda' or 'cpu'
+    """
     start_time = time.time()
     set_seed(seed)
     config = DATASETS[dataset]
@@ -175,6 +197,12 @@ def train_loop(data, optimizer, ce_loss, pointnet, device, train=True):
     """
     One forward (and backward when `train`) pass.
 
+    :param data: tuple (pc torch.Tensor [batch, n_points, dims], targets LongTensor [batch, n_points], filenames)
+    :param optimizer: torch.optim.Optimizer
+    :param ce_loss: torch.nn.CrossEntropyLoss
+    :param pointnet: SegmentationPointNet
+    :param device: str, 'cuda' or 'cpu'
+    :param train: bool, train mode and optimizer step
     :return: metrics dict, targets [batch, n_points] (cpu), predictions [batch, n_points] (cpu)
     """
     metrics = {}
