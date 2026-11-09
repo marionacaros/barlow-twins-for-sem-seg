@@ -81,7 +81,7 @@ With PointNet, pre-training adds 3.1 mIoU points (+6% relative) and improves IoU
 | PointNet | 84.9 | 57.2 | 55.9 | 4.3 | 65.2 | 29.7 | 87.6 |
 | SSL + PointNet | **85.4** | **57.8** | **56.4** | **6.1** | **66.5** | **30.2** | **88.1** |
 
-When the share of labeled data varies from 10% to 50%, the pre-trained models outperform training from scratch on both datasets. The gap is largest when few labels are available.
+The pre-trained models outperform training from scratch on both datasets. The gap is largest when few labels are available.
 
 ## Repository structure
 
