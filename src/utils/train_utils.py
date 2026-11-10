@@ -104,12 +104,12 @@ def split_by_block(files, block_id_fn, val_fraction=0.1, seed=0):
     Split `files` into train/val so that every block (spatial tile) is entirely in one of the two sets.
 
     Neighbouring windows of the same block overlap, so a random file-level split would leak points between
-    train and val. Blocks are shuffled with `seed` and added to val until it holds at least
-    `val_fraction` of the files.
+    train and val. Blocks are shuffled with `seed` and each one is added to val if that brings val closer to
+    `val_fraction` of the files, so one large block cannot blow up the validation set.
 
     :param files: list of str, window file names
     :param block_id_fn: callable str -> str, e.g. `cat3_block_id`
-    :param val_fraction: float, minimum share of files in val
+    :param val_fraction: float, target share of files in val
     :param seed: int
     :return: train_files, val_files (both keep the original file order)
     """
@@ -124,13 +124,12 @@ def split_by_block(files, block_id_fn, val_fraction=0.1, seed=0):
     target = val_fraction * len(files)
     val_blocks, n_val = set(), 0
     for b in blocks:
-        if n_val >= target:
-            break
         # always keep at least one block for training
         if len(val_blocks) == len(blocks) - 1:
             break
-        val_blocks.add(b)
-        n_val += counts[b]
+        if abs(n_val + counts[b] - target) < abs(n_val - target):
+            val_blocks.add(b)
+            n_val += counts[b]
 
     train_files = [f for f in files if block_id_fn(f) not in val_blocks]
     val_files = [f for f in files if block_id_fn(f) in val_blocks]

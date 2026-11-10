@@ -2,12 +2,17 @@
 Build the DALES split lists from every window of the split tiles (output of 1_split_LAS_DALES.py).
 
 For each share of labeled data it writes train_test_files/dales_25x25_barlow_<pct>/:
-  val_cls_files.txt    labeled train windows (despite the name; used for fine-tuning)
-  train_cls_files.txt  the remaining, unlabeled train windows (used for Barlow Twins pre-training)
-  test_cls_files.txt   every window of the test tiles
+  seg_train_files.txt  fine-tuning train windows: the labeled windows outside the validation tiles
+  seg_val_files.txt    fine-tuning validation windows: the labeled windows of the validation tiles
+  test_cls_files.txt   every window of the test tiles (the same in every folder)
+  ssl_files.txt        every train window, labeled and unlabeled (Barlow Twins pre-training; the same in every
+                       folder)
 
 The train windows are shuffled once with --seed and the labeled set is the first <pct>% of that order,
 so the labeled sets are nested (10% is inside 20%, which is inside 50%). Lists are sorted by file name.
+
+The validation tiles are whole train tiles, chosen once with --seed until they hold --val_fraction of the train
+windows, so seg_train and seg_val never share a tile, together make up the labeled set, and are nested across shares.
 
 With --no_ground the lists go to dales_25x25_noground_barlow_<pct>/ instead, for training without ground points
 (dataset 'dales_noground'): train and val leave out windows with fewer than --min_non_ground non-ground points, and
@@ -18,9 +23,9 @@ import argparse
 import os
 import random
 from multiprocessing import Pool
-
-# import torch before numpy: some conda MKL builds of numpy need the OpenMP runtime torch loads
 import torch
+
+from src.utils.train_utils import dales_block_id, split_by_block
 
 GROUND = 1  # raw DALES class code of ground
 
@@ -53,6 +58,20 @@ def make_splits(train_files, test_files, pcts, seed):
         n_labeled = round(len(order) * pct / 100)
         splits[pct] = {'val': sorted(order[:n_labeled]), 'train': sorted(order[n_labeled:]), 'test': sorted(test_files)}
     return splits
+
+
+def add_seg_splits(splits, val_tiles):
+    """
+    Split the labeled windows of every share into fine-tuning train/val by tile.
+
+    :param splits: dict from `make_splits` (or `drop_ground_windows`)
+    :param val_tiles: set of str, validation tiles (`dales_block_id`)
+    :return: dict with the same structure plus 'seg_train' and 'seg_val' (sorted lists)
+    """
+    return {pct: {**s,
+                  'seg_train': [f for f in s['val'] if dales_block_id(f) not in val_tiles],
+                  'seg_val': [f for f in s['val'] if dales_block_id(f) in val_tiles]}
+            for pct, s in splits.items()}
 
 
 def count_non_ground(path):
@@ -120,6 +139,8 @@ def parse_args():
     parser.add_argument('--out_dir', type=str, default='train_test_files', help='where the list folders are written')
     parser.add_argument('--pcts', type=int, nargs='+', default=[10, 20, 50], help='shares of labeled data (%%)')
     parser.add_argument('--seed', type=int, default=4, help='shuffle seed for choosing the labeled windows')
+    parser.add_argument('--val_fraction', type=float, default=0.1,
+                        help='share of the train windows in the validation tiles (fine-tuning validation)')
     parser.add_argument('--no_ground', action='store_true',
                         help='write dales_25x25_noground_barlow_<pct> lists without (almost) all-ground windows')
     parser.add_argument('--min_non_ground', type=int, default=100,
@@ -145,13 +166,25 @@ def main(args):
         test_counts = non_ground_counts(os.path.join(args.dataset_folder, 'test'), test_files, args.num_cpus)
         splits = drop_ground_windows(splits, train_counts, test_counts, args.min_non_ground)
 
+    # validation tiles chosen on every train window, so they are the same with and without --no_ground
+    _, val_windows = split_by_block(train_files, dales_block_id, val_fraction=args.val_fraction, seed=args.seed)
+    val_tiles = {dales_block_id(f) for f in val_windows}
+    print(f'Validation tiles: {sorted(val_tiles)}')
+    splits = add_seg_splits(splits, val_tiles)
+
     for pct, split in splits.items():
         out = os.path.join(args.out_dir, f'{prefix}_{pct}')
         os.makedirs(out, exist_ok=True)
 
-        for key in ('train', 'val', 'test'):
-            write_list(os.path.join(out, f'{key}_cls_files.txt'), split[key])
-        print(f'{out}: {len(split["val"])} labeled, {len(split["train"])} unlabeled, {len(split["test"])} test')
+        for key in ('seg_train', 'seg_val'):
+            write_list(os.path.join(out, f'{key}_files.txt'), split[key])
+        
+        write_list(os.path.join(out, 'test_cls_files.txt'), split['test'])  
+        write_list(os.path.join(out, 'ssl_files.txt'), sorted(split['train'] + split['val']))
+        
+        print(f'{out}: {len(split["val"])} labeled (seg train {len(split["seg_train"])}, seg val '
+              f'{len(split["seg_val"])}), {len(split["train"])} unlabeled, {len(split["train"]) + len(split["val"])} SSL, '
+              f'{len(split["test"])} test')
 
 
 if __name__ == '__main__':

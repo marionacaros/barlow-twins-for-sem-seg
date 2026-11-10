@@ -103,8 +103,8 @@ def test_compute_embeddings(cat3_folder, seg_checkpoint):
 def test_scripts_end_to_end(cat3_folder, seg_checkpoint, tmp_path, script):
     lists = tmp_path / 'lists'
     lists.mkdir()
-    (lists / 'train_cls_files.txt').write_text('pc_0_RIBERA_pt436662_w1.pt\npc_0_RIBERA_pt436662_w2.pt\n')
-    (lists / 'val_cls_files.txt').write_text('pc_0_CAT3_493679_w3.pt\n')
+    (lists / 'ssl_files.txt').write_text('pc_0_RIBERA_pt436662_w1.pt\npc_0_RIBERA_pt436662_w2.pt\n'
+                                         'pc_0_CAT3_493679_w3.pt\n')
     embeds = tmp_path / 'embeds.npz'
     out = tmp_path / 'out.txt'
     cmd = [sys.executable, script, '--dataset_folder', str(cat3_folder), '--model_checkpoint', str(seg_checkpoint),

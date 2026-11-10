@@ -7,7 +7,7 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
-from src.datasets import BarlowTwinsDataset
+from src.datasets import SEG_TRAIN_LIST, SEG_VAL_LIST, BarlowTwinsDataset, split_folder
 from src.models.barlow_twins import BarlowTwinsPN2, OnlineFineTunerClassifier
 from src.models.pointnet2_sem_seg import PointNet2
 from src.utils.mlflow_utils import add_mlflow_args, experiment_name, lightning_loggers
@@ -25,12 +25,14 @@ def parse_args():
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
-    parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
-                        help='folder with the split lists')
+    parser.add_argument('--path_list_files', type=str, default=split_folder('cat3'),
+                        help='folder with the split lists (the SSL training set does not depend on the share of '
+                             'labeled data)')
     parser.add_argument('--train_list', type=str, default='train_reduced_files_semdedup0996.txt',
-                        help='unlabeled files used for SSL training (inside --path_list_files)')
-    parser.add_argument('--val_list', type=str, default='val_cls_files.txt',
-                        help='labeled files used for validation and the online probe (inside --path_list_files)')
+                        help='files used for SSL training, inside --path_list_files (default: the semantically '
+                             'deduplicated labeled + unlabeled windows)')
+    parser.add_argument('--val_lists', type=str, nargs='+', default=[SEG_TRAIN_LIST, SEG_VAL_LIST],
+                        help='labeled files used for validation and the online probe, inside --path_list_files')
     parser.add_argument('--init_checkpoint', type=str, default='',
                         help='optional supervised PointNet++ checkpoint (best_model.pth) to initialise the encoder')
     parser.add_argument('--number_of_points', type=int, default=4300,
@@ -61,7 +63,8 @@ def main(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_files = read_list(args.path_list_files, args.train_list)
-    val_files = read_list(args.path_list_files, args.val_list)
+    val_files = [f for name in args.val_lists for f in read_list(args.path_list_files, name)]
+    logging.info(f'SSL training files: {len(train_files)}, validation files: {len(val_files)}')
 
     train_dataset = BarlowTwinsDataset(dataset_folder=args.dataset_folder,
                                        task='classification',

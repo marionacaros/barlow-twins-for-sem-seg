@@ -9,11 +9,11 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from src.datasets import DATASETS, BarlowTwinsDataset
+from src.datasets import DATASETS, LABELED_PCTS, SEG_TRAIN_LIST, SEG_VAL_LIST, BarlowTwinsDataset, split_folder
 from src.models.barlow_twins import BarlowTwinsPN2
 from src.models.pointnet2_sem_seg import PointNet2
-from src.utils.train_utils import (cat3_block_id, get_device, load_checkpoint, make_generator, read_list,
-                                   seed_worker, set_seed, split_by_block, timestamp)
+from src.utils.train_utils import (get_device, load_checkpoint, make_generator, read_list, seed_worker, set_seed,
+                                   timestamp)
 from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name
 from src.utils.utils import rotate_point_cloud_z
 
@@ -239,19 +239,18 @@ def parse_args():
     parser.add_argument('--step_size', type=int, default=100, help='decay step for lr decay [default: 100 epochs]')
     parser.add_argument('--lr_decay', type=float, default=0.5, help='decay rate for lr decay [default: 0.5]')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
-    parser.add_argument('--path_list_files', type=str, default='train_test_files/RGBN_40x40_barlow_10',
-                        help='folder with the split lists')
-    parser.add_argument('--labeled_list', type=str, default='val_cls_files.txt',
-                        help='labeled files used for fine-tuning, inside --path_list_files '
-                             '(val_cls_files.txt holds the labeled subset)')
-    parser.add_argument('--val_fraction', type=float, default=0.1,
-                        help='fraction of labeled files used for validation (split by block)')
+    parser.add_argument('--labeled_pct', type=int, choices=LABELED_PCTS, default=10,
+                        help='share of labeled data (%%): picks the split folder train_test_files/RGBN_40x40_barlow_<pct>')
+    parser.add_argument('--path_list_files', type=str, default=None,
+                        help='folder with the split lists (overrides --labeled_pct)')
     parser.add_argument('--number_of_workers', type=int, default=10, help='number of workers for the dataloader')
     parser.add_argument('--checkpoint', type=str, default='', help='Barlow Twins (.ckpt) checkpoint to start from')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
     parser.add_argument('--device', type=str, default=None, help='cuda or cpu (default: cuda if available)')
     add_mlflow_args(parser)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.path_list_files = args.path_list_files or split_folder('cat3', args.labeled_pct)
+    return args
 
 
 def main(args):
@@ -266,7 +265,7 @@ def main(args):
     set_seed(args.seed)
 
     # run folder: <log_root>/<log_dir or timestamp + name>/{checkpoints,logs}
-    name = 'PN2'
+    name = 'PN2_' + os.path.basename(os.path.normpath(args.path_list_files))
     if args.checkpoint:
         name += '_barlow_' + os.path.basename(args.checkpoint).split('-')[0]
     experiment_dir = Path(args.log_root).joinpath(args.log_dir or timestamp() + name)
@@ -280,10 +279,10 @@ def main(args):
     log_string(args)
 
     # ------------------------------------------ data ------------------------------------------
-    # labeled files, split into train/val by block so overlapping windows never end up in both sets
-    labeled_files = read_list(args.path_list_files, args.labeled_list)
-    train_files, val_files = split_by_block(labeled_files, cat3_block_id, val_fraction=args.val_fraction,
-                                            seed=args.seed)
+    # labeled windows, split into train/val by block by the list generator
+    train_files = read_list(args.path_list_files, SEG_TRAIN_LIST)
+    val_files = read_list(args.path_list_files, SEG_VAL_LIST)
+    log_string('Train files: %d, val files: %d (%s)' % (len(train_files), len(val_files), args.path_list_files))
 
     train_dataset = BarlowTwinsDataset(dataset_folder=args.dataset_folder,
                                        task='segmentation',

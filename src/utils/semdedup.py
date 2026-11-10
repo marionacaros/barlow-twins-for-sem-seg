@@ -20,7 +20,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from src.datasets import DATASETS, make_dataset
+from src.datasets import DATASETS, SSL_LIST, make_dataset, split_folder
 from src.models.pointnet import SegmentationPointNet
 from src.utils.train_utils import load_checkpoint, read_list
 
@@ -42,7 +42,7 @@ def add_common_args(parser):
                              'used to embed the windows')
     parser.add_argument('--path_list_files', type=str, default=None,
                         help="folder with the split lists (default: the dataset's 10%% split)")
-    parser.add_argument('--lists', nargs='+', default=['train_cls_files.txt', 'val_cls_files.txt'],
+    parser.add_argument('--lists', nargs='+', default=[SSL_LIST],
                         help='lists in --path_list_files whose windows are deduplicated together '
                              '(default, as in the notebook: unlabeled and labeled windows)')
     parser.add_argument('--embeddings', type=str, default=None,
@@ -217,7 +217,7 @@ def read_files(args):
     :param args: argparse.Namespace with the `add_common_args` arguments
     :return: list of str
     """
-    args.path_list_files = args.path_list_files or DATASETS[args.dataset]['path_list_files']
+    args.path_list_files = args.path_list_files or split_folder(args.dataset)
     files = []
     for name in args.lists:
         files += read_list(args.path_list_files, name)

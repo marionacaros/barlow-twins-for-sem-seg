@@ -12,14 +12,14 @@ import torch.optim as optim
 from progressbar import progressbar
 from torch.utils.tensorboard import SummaryWriter
 
-from src.datasets import DATASETS, make_dataset
+from src.datasets import DATASETS, LABELED_PCTS, SEG_TRAIN_LIST, SEG_VAL_LIST, make_dataset, split_folder
 from src.models.barlow_twins import BarlowTwins
 from src.models.pointnet import SegmentationPointNet
 from src.utils.class_weights import WEIGHTING_METHODS, count_points_per_class, isns_weights
 from src.utils.get_metrics import SegmentationMetrics
 from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name
 from src.utils.train_utils import (get_device, load_checkpoint, make_generator, read_list,
-                                   seed_worker, set_seed, split_by_block, timestamp)
+                                   seed_worker, set_seed, timestamp)
 from src.utils.utils import rotate_point_cloud_z, save_checkpoint
 
 
@@ -68,14 +68,12 @@ def train_loop(data, optimizer, ce_loss, pointnet, device, train=True):
 def train(dataset,
           dataset_folder,
           path_list_files,
-          labeled_list,
           n_points,
           batch_size,
           epochs,
           learning_rate,
           number_of_workers,
           model_checkpoint,
-          val_fraction,
           seed,
           checkpoint_dir,
           log_dir,
@@ -90,15 +88,13 @@ def train(dataset,
 
     :param dataset: str, 'cat3' or 'dales'
     :param dataset_folder: str, folder with the .pt windows
-    :param path_list_files: str, folder with the split lists
-    :param labeled_list: str, list of labeled files inside path_list_files
+    :param path_list_files: str, folder with the split lists (reads SEG_TRAIN_LIST and SEG_VAL_LIST)
     :param n_points: int, points per cloud
     :param batch_size: int
     :param epochs: int
     :param learning_rate: float
     :param number_of_workers: int, DataLoader workers
     :param model_checkpoint: str, Barlow Twins .ckpt ('' to train from scratch)
-    :param val_fraction: float, share of labeled files used for validation (split by block)
     :param seed: int
     :param weighting: str, 'fixed' (DATASETS class_weights) or 'isns' (1/sqrt of the training points per class)
     :param checkpoint_dir: str, folder for checkpoints
@@ -116,10 +112,10 @@ def train(dataset,
     num_classes = len(class_names)
     run_time = timestamp()
 
-    # Labeled files, split into train/val by block so overlapping windows never end up in both sets
-    labeled_files = read_list(path_list_files, labeled_list)
-    train_files, val_files = split_by_block(labeled_files, config['block_id'], val_fraction=val_fraction, seed=seed)
-    logging.info(f'Labeled files: {len(labeled_files)} (train {len(train_files)}, val {len(val_files)})')
+    # labeled windows, split into train/val by block by the list generator
+    train_files = read_list(path_list_files, SEG_TRAIN_LIST)
+    val_files = read_list(path_list_files, SEG_VAL_LIST)
+    logging.info(f'Train files: {len(train_files)}, val files: {len(val_files)} ({path_list_files})')
 
     name = f'_{dataset}_{os.path.basename(os.path.normpath(path_list_files))}'
     if weighting != 'fixed':
@@ -279,13 +275,10 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='cat3', help='dataset')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
+    parser.add_argument('--labeled_pct', type=int, choices=LABELED_PCTS, default=10,
+                        help='share of labeled data (%%): picks the split folder train_test_files/<...>_barlow_<pct>')
     parser.add_argument('--path_list_files', type=str, default=None,
-                        help='folder with the split lists (default: the dataset\'s 10%% split)')
-    parser.add_argument('--labeled_list', type=str, default='val_cls_files.txt',
-                        help='labeled files used for fine-tuning, inside --path_list_files (val_cls_files.txt '
-                             'holds the labeled subset of each split folder)')
-    parser.add_argument('--val_fraction', type=float, default=0.1,
-                        help='fraction of labeled files used for validation (split by block)')
+                        help='folder with the split lists (overrides --labeled_pct)')
     parser.add_argument('--number_of_points', type=int, default=4096, help='number of points per cloud')
     parser.add_argument('--batch_size', type=int, default=None, help='batch size (default: 32 cat3, 16 dales)')
     parser.add_argument('--epochs', type=int, default=None, help='number of epochs (default: 100 cat3, 150 dales)')
@@ -318,15 +311,13 @@ def main(args):
     config = DATASETS[args.dataset]
     train(dataset=args.dataset,
           dataset_folder=args.dataset_folder,
-          path_list_files=args.path_list_files or config['path_list_files'],
-          labeled_list=args.labeled_list,
+          path_list_files=args.path_list_files or split_folder(args.dataset, args.labeled_pct),
           n_points=args.number_of_points,
           batch_size=args.batch_size or config['batch_size'],
           epochs=args.epochs or config['epochs'],
           learning_rate=args.learning_rate,
           number_of_workers=args.number_of_workers,
           model_checkpoint=args.model_checkpoint,
-          val_fraction=args.val_fraction,
           seed=args.seed,
           weighting=args.weighting,
           checkpoint_dir=args.checkpoint_dir,

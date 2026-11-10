@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from progressbar import progressbar
 
-from src.datasets import DATASETS, make_dataset
+from src.datasets import DATASETS, TEST_LIST, make_dataset, split_folder
 from src.models.pointnet import SegmentationPointNet
 from src.utils.get_metrics import SegmentationMetrics, report_segmentation
 from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name, segmentation_metrics
@@ -47,7 +47,7 @@ def test(dataset,
     class_names = config['class_names']
     num_classes = len(class_names)
     checkpoint = load_checkpoint(model_checkpoint, device)
-    test_files = read_list(path_list_files, 'test_cls_files.txt')
+    test_files = read_list(path_list_files, TEST_LIST)
 
     # full windows (no subsampling), one per batch
     test_dataset = make_dataset(dataset, dataset_folder, test_files, number_of_points=None, fixed_num_points=False)
@@ -136,7 +136,7 @@ def main(args):
          args.output_folder,
          args.number_of_workers,
          args.model_checkpoint,
-         args.path_list_files or DATASETS[args.dataset]['path_list_files'],
+         args.path_list_files or split_folder(args.dataset),
          get_device(args.device),
          args.plot,
          args.mlflow_uri,

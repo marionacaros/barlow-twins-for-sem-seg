@@ -99,3 +99,17 @@ def test_drop_ground_windows_keeps_nesting():
     for s in splits.values():
         assert all(train_counts[f] >= 100 for f in s['train'] + s['val'])
         assert set(s['test']) == set(test) - {test[0]}
+
+
+def test_seg_splits_partition_labeled_set_by_tile():
+    """Fine-tuning train/val make up the labeled set, never share a tile and are nested across shares."""
+    tiles = ['5145_54470', '5080_54435', '5100_54490', '5110_54460']
+    train = [f'{t}_w{i}.pt' for t in tiles for i in range(1, 401)]
+    test = [f'5080_54400_w{i}.pt' for i in range(1, 11)]
+    splits = lists.add_seg_splits(lists.make_splits(train, test, [10, 20, 50], seed=4), {'5100_54490'})
+    for s in splits.values():
+        assert sorted(s['seg_train'] + s['seg_val']) == s['val']
+        assert {f.rsplit('_', 1)[0] for f in s['seg_val']} == {'5100_54490'}
+        assert '5100_54490' not in {f.rsplit('_', 1)[0] for f in s['seg_train']}
+    for k in ('seg_train', 'seg_val'):
+        assert set(splits[10][k]) <= set(splits[20][k]) <= set(splits[50][k])

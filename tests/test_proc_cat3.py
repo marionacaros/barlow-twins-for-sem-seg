@@ -86,3 +86,20 @@ def test_ndvi_minus_one_when_no_signal():
     ndvi = prep.compute_ndvi(np.array([0, 100, 0, 300]), np.array([0, 100, 50, 100]))
     np.testing.assert_allclose(ndvi, [-1.0, 0.0, -1.0, 0.5])
     assert np.isfinite(ndvi).all()
+
+
+def test_cat3_split_lists():
+    """Labeled sets grow by unlabeled blocks; seg train/val partition them by block and are nested across shares."""
+    lists = load('generate_cat3_train_lists.py')
+    labeled = [f'pc_0_CAT3_{b}_w{w}.pt' for b in range(10) for w in range(20)]
+    unlabeled = [f'pc_0_CAT3_{b}_w{w}.pt' for b in range(5, 60) for w in range(100, 120)]
+    test = ['pc_0_CAT3_99_w0.pt']
+    splits = lists.make_splits(unlabeled, labeled, test, [10, 20, 50], val_fraction=0.1, seed=42)
+    for pct, s in splits.items():
+        n_blocks, max_files = lists.EXTRA_LABELED[pct]
+        assert len(s['seg_train']) + len(s['seg_val']) == len(labeled) + min(n_blocks * 20, max_files, len(unlabeled))
+        assert not {f.split('_')[3] for f in s['seg_train']} & {f.split('_')[3] for f in s['seg_val']}
+        assert s['test'] == test and sorted(s['ssl']) == sorted(unlabeled + labeled)
+    for key in ('seg_train', 'seg_val'):
+        assert set(splits[10][key]) <= set(splits[20][key]) <= set(splits[50][key])
+    assert len(splits[10]['seg_val']) == 20  # one block of the 10% set

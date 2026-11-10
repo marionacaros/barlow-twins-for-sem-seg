@@ -56,6 +56,14 @@ def test_split_by_block_has_no_shared_blocks():
     assert split_by_block(files, cat3_block_id, val_fraction=0.2, seed=1) == (train, val)
 
 
+def test_split_by_block_skips_blocks_that_overshoot():
+    """A block that would take val far past the target is skipped, whatever the shuffle order."""
+    files = [f'pc_0_CAT3_big_w{w}.pt' for w in range(50)] + [f'pc_0_CAT3_{b}_w{w}.pt' for b in range(5) for w in range(2)]
+    for seed in range(5):
+        _, val = split_by_block(files, cat3_block_id, val_fraction=0.1, seed=seed)
+        assert 'big' not in {cat3_block_id(f) for f in val} and len(val) == 6
+
+
 def test_split_by_block_keeps_a_training_block():
     """At least one block always stays in train."""
     files = ['pc_0_CAT3_1_w0.pt', 'pc_0_CAT3_2_w0.pt']

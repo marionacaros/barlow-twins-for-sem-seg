@@ -5,7 +5,6 @@ import torch
 import torch.utils.data as data
 import numpy as np
 
-from src.utils.train_utils import cat3_block_id, dales_block_id
 
 
 def normalize_xy(pc):
@@ -368,16 +367,24 @@ DALES_POINTS_PER_CLASS = {
     'cars': 6e6,
 }
 
+# shares of labeled data (%) with a split folder: train_test_files/<...>_barlow_<pct>
+LABELED_PCTS = (10, 20, 50)
+# lists of every split folder (proc/*/generate_*_train_lists.py): fine-tuning train/val (split by block), test
+# and every train window (input of the Barlow Twins list; DALES trains on it directly)
+SEG_TRAIN_LIST = 'seg_train_files.txt'
+SEG_VAL_LIST = 'seg_val_files.txt'
+TEST_LIST = 'test_cls_files.txt'
+SSL_LIST = 'ssl_files.txt'
+
 DATASETS = {
     'cat3': {
         'dataset_class': BarlowTwinsDataset,
         'class_names': ['other_buildings', 'pylon', 'power_lines', 'low_veg', 'med_high_veg', 'roof'],
         'channels_in': 9,
-        'block_id': cat3_block_id,
-        'path_list_files': 'train_test_files/RGBN_40x40_barlow_10',
-        # Barlow Twins pre-training
+        # split lists per share of labeled data, see split_folder
+        'split_folder': 'train_test_files/RGBN_40x40_barlow_{pct}',
+        # Barlow Twins pre-training: the semantically deduplicated windows (labeled and unlabeled)
         'ssl_list': 'train_reduced_files_semdedup0996.txt',
-        'ssl_add_labeled': False,
         'ssl_number_of_points': 4500,
         'ssl_max_epochs': 300,
         # fine-tuning; double weight on classes with < 1% of the points
@@ -391,10 +398,9 @@ DATASETS = {
         # labels produced by DalesDataset.get_labels
         'class_names': ['ground', 'vegetation', 'cars', 'trucks', 'power_lines', 'fences', 'poles', 'buildings'],
         'channels_in': 5,
-        'block_id': dales_block_id,
-        'path_list_files': 'train_test_files/dales_25x25_barlow_10',
-        'ssl_list': 'train_cls_files.txt',
-        'ssl_add_labeled': True,
+        'split_folder': 'train_test_files/dales_25x25_barlow_{pct}',
+        # Barlow Twins pre-training: every train window, labeled and unlabeled (generate_dales_train_lists.py)
+        'ssl_list': SSL_LIST,
         'ssl_number_of_points': 4096,
         'ssl_max_epochs': 150,
         # double weight on classes with < 1% of the points (cars 0.7%, trucks 0.2%, power lines 0.2%,
@@ -411,11 +417,10 @@ DATASETS = {
         # labels produced by DalesDataset.get_labels(use_ground=False)
         'class_names': ['vegetation', 'cars', 'trucks', 'power_lines', 'fences', 'poles', 'buildings'],
         'channels_in': 5,
-        'block_id': dales_block_id,
         # lists without (almost) all-ground windows: generate_dales_train_lists.py --no_ground
-        'path_list_files': 'train_test_files/dales_25x25_noground_barlow_10',
-        'ssl_list': 'train_cls_files.txt',
-        'ssl_add_labeled': True,
+        'split_folder': 'train_test_files/dales_25x25_noground_barlow_{pct}',
+        # Barlow Twins pre-training: every train window, labeled and unlabeled (generate_dales_train_lists.py)
+        'ssl_list': SSL_LIST,
         # more than VIEW_POINTS (4096), so the two views (first and last 4096 points) are different subsamplings
         'ssl_number_of_points': 5000,
         'ssl_max_epochs': 150,
@@ -427,6 +432,19 @@ DATASETS = {
         'epochs': 150,
     },
 }
+
+def split_folder(name, labeled_pct=10):
+    """
+    Folder with the split lists of dataset `name` for a share of labeled data. The test list and, for
+    Barlow Twins, the unlabeled + labeled windows are the same in every folder.
+
+    :param name: str, key of DATASETS
+    :param labeled_pct: int, share of labeled data (%), one of LABELED_PCTS
+    :return: str
+    """
+    if labeled_pct not in LABELED_PCTS:
+        raise ValueError(f'labeled_pct must be one of {LABELED_PCTS}, got {labeled_pct}')
+    return DATASETS[name]['split_folder'].format(pct=labeled_pct)
 
 
 def make_dataset(name, dataset_folder, files, number_of_points, fixed_num_points=True,

@@ -7,7 +7,7 @@ import time
 import torch
 from progressbar import progressbar
 
-from src.datasets import DATASETS, BarlowTwinsDataset
+from src.datasets import DATASETS, TEST_LIST, BarlowTwinsDataset
 from src.models.pointnet2_sem_seg import PointNet2
 from src.utils.get_metrics import SegmentationMetrics, report_segmentation
 from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name, segmentation_metrics
@@ -44,7 +44,7 @@ def test(dataset_folder,
     """
     start_time = time.time()
     checkpoint = load_checkpoint(model_checkpoint, device)
-    test_files = read_list(path_list_files, 'test_cls_files.txt')
+    test_files = read_list(path_list_files, TEST_LIST)
 
     # full windows (no subsampling), one per batch
     test_dataset = BarlowTwinsDataset(dataset_folder=dataset_folder,

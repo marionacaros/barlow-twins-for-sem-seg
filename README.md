@@ -160,12 +160,15 @@ When a window is loaded, its points are sampled (without replacement) or duplica
 
 | File | Content |
 |---|---|
-| `val_cls_files.txt` | **Labeled** windows used for fine-tuning. The scripts split them by block into train and validation, so overlapping windows never end up in both. |
-| `train_cls_files.txt` | The remaining, **unlabeled** training windows. |
+| `seg_train_files.txt` | **Labeled** windows used for fine-tuning (train). |
+| `seg_val_files.txt` | **Labeled** windows used for fine-tuning (validation). They come from blocks (tiles for DALES) that have no window in `seg_train_files.txt`, so overlapping windows never end up in both. |
 | `test_cls_files.txt` | Test windows. They are the same for every share of labeled data. |
-| `train_reduced_files_semdedup0996.txt` | (LiDAR-CAT3) Windows left after semantic deduplication of the labeled and unlabeled windows with threshold 0.996, used for Barlow Twins training. The same file is in `_10`, `_50` and `_p1`; `_20` has none. Rebuild it with `proc/semdedup_centroid.py` or `proc/semdedup_pairwise.py`. |
+| `ssl_files.txt` | Every training window, labeled and unlabeled. They are the same for every share. DALES trains Barlow Twins on them; for LiDAR-CAT3 they are the input of the semantic deduplication. |
+| `train_reduced_files_semdedup0996.txt` | (LiDAR-CAT3) Windows left after semantic deduplication of `ssl_files.txt` with threshold 0.996, used for Barlow Twins training. The same in every folder. Rebuild it with `proc/semdedup_centroid.py` or `proc/semdedup_pairwise.py`. |
 
-The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._10` holds the 12% labeled split used in the paper. `RGBN_..._p1` has the same lists plus `val_object_files.txt`. LiDAR-CAT3 test and validation windows come from separate blocks. The DALES lists cover every 25 m window of every tile: all 4,400 windows of the 11 test tiles are test windows, and the labeled sets are nested (10% ⊂ 20% ⊂ 50% of the 11,600 train windows). Rebuild them with `proc/dales_data/generate_dales_train_lists.py`.
+The `<pct>` suffix is the share of labeled data: `10`, `20` or `50`. `RGBN_..._10` holds the 12% labeled split used in the paper. `RGBN_..._p1` keeps the original lists (`train_cls_files.txt` unlabeled, `val_cls_files.txt` labeled) plus `val_object_files.txt`; no script reads it. The labeled sets, and their train and validation parts, are nested (10% ⊂ 20% ⊂ 50%). Choose the share with `--labeled_pct` in the fine-tuning scripts.
+- **LiDAR-CAT3:** labeled and test windows come from separate blocks. `proc/cat3_data/generate_cat3_train_lists.py` builds every folder from the block partition of `generate_cls_train_lists_10.py`: 20% and 50% add unlabeled blocks to the 10% labeled set, and the validation blocks (about 10% of the 10% labeled windows) are the same for every share.
+- **DALES:** the lists cover every 25 m window of every tile: all 4,400 windows of the 11 test tiles are test windows, and the labeled sets are random windows of the 11,600 train windows. The validation windows are the labeled windows of 3 train tiles, the same for every share. Rebuild them with `proc/dales_data/generate_dales_train_lists.py`.
 
 ## Usage
 
@@ -187,12 +190,12 @@ SPLIT=train_test_files/RGBN_40x40_barlow_10
 python proc/cat3_data/1_split_las.py --LAS_files_path <las_dir> --out_path <windows_dir>
 python proc/cat3_data/2_preprocessing.py --in_path <windows_dir> --out_path <data_dir>
 
-# 1. Supervised training on the labeled windows (val_cls_files.txt), from scratch.
+# 1. Supervised training on the labeled windows (seg_train/seg_val_files.txt), from scratch.
 #    Writes <supervised.pth> to src/checkpoints/.
 PYTHONPATH=. python src/bt/train_seg_pointnet.py --dataset cat3 --dataset_folder <data_dir> \
     --path_list_files $SPLIT
 
-# 2. Semantic deduplication of the labeled and unlabeled windows with the step 1 embeddings.
+# 2. Semantic deduplication of the labeled and unlabeled windows (ssl_files.txt) with the step 1 embeddings.
 #    Writes $SPLIT/train_reduced_files_semdedup0996_centroid.txt.
 #    semdedup_centroid.py repeats the filter that built the committed train_reduced_files_semdedup0996.txt;
 #    proc/semdedup_pairwise.py (same options) runs SemDeDup and writes ..._pairwise.txt instead.
@@ -217,7 +220,7 @@ PYTHONPATH=. python src/bt/test_seg_pointnet.py --dataset cat3 --dataset_folder 
 
 To skip step 2 and use the committed deduplicated list, leave out `--train_list` in step 3.
 
-**DALES** has no deduplication step. Barlow Twins trains on the unlabeled and labeled windows together (`train_cls_files.txt` plus `val_cls_files.txt`). Build the windows and lists first, then run steps 1, 3, 4 and 5 with `--dataset dales`, leaving out `--path_list_files` and `--train_list`. Use `--dataset_folder <dales_dir>/train` for steps 1, 3 and 4, and `<dales_dir>/test` for step 5.
+**DALES** has no deduplication step. Barlow Twins trains on the unlabeled and labeled windows together (`ssl_files.txt`). Build the windows and lists first, then run steps 1, 3, 4 and 5 with `--dataset dales`, leaving out `--path_list_files` and `--train_list`. Use `--dataset_folder <dales_dir>/train` for steps 1, 3 and 4, and `<dales_dir>/test` for step 5.
 
 ```bash
 python proc/dales_data/1_split_LAS_DALES.py --LAS_files_path <dales_las_dir> --out_path <dales_dir>

@@ -7,7 +7,7 @@ import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 
-from src.datasets import DATASETS, make_dataset
+from src.datasets import DATASETS, SEG_TRAIN_LIST, SEG_VAL_LIST, make_dataset, split_folder
 from src.models.barlow_twins import BarlowTwins, OnlineFineTuner
 from src.models.pointnet import SegmentationPointNet
 from src.utils.mlflow_utils import add_mlflow_args, experiment_name, lightning_loggers
@@ -26,13 +26,14 @@ def parse_args():
     parser.add_argument('--dataset', choices=sorted(DATASETS), default='cat3', help='dataset')
     parser.add_argument('--dataset_folder', type=str, required=True, help='folder with the preprocessed .pt windows')
     parser.add_argument('--path_list_files', type=str, default=None,
-                        help='folder with the split lists (default: the dataset\'s 10%% split)')
+                        help='folder with the split lists (default: the dataset\'s 10%% split; the SSL training set '
+                             'does not depend on the share of labeled data)')
     parser.add_argument('--train_list', type=str, default=None,
-                        help='unlabeled files used for SSL training, inside --path_list_files '
-                             '(default: train_reduced_files_semdedup0996.txt for cat3, train_cls_files.txt for dales)')
-    parser.add_argument('--val_list', type=str, default='val_cls_files.txt',
-                        help='labeled files used for validation and the online probe, inside --path_list_files '
-                             '(for dales they are also added to the SSL training set)')
+                        help='files used for SSL training, inside --path_list_files (default: '
+                             'train_reduced_files_semdedup0996.txt for cat3; ssl_files.txt, every train window, '
+                             'for dales)')
+    parser.add_argument('--val_lists', type=str, nargs='+', default=[SEG_TRAIN_LIST, SEG_VAL_LIST],
+                        help='labeled files used for validation and the online probe, inside --path_list_files')
     parser.add_argument('--init_checkpoint', type=str, default='',
                         help='optional supervised PointNet checkpoint (.pth) to initialise the encoder')
     parser.add_argument('--number_of_points', type=int, default=None,
@@ -51,7 +52,7 @@ def parse_args():
     args = parser.parse_args()
 
     config = DATASETS[args.dataset]
-    args.path_list_files = args.path_list_files or config['path_list_files']
+    args.path_list_files = args.path_list_files or split_folder(args.dataset)
     args.train_list = args.train_list or config['ssl_list']
     args.number_of_points = args.number_of_points or config['ssl_number_of_points']
     args.max_epochs = args.max_epochs or config['ssl_max_epochs']
@@ -72,9 +73,8 @@ def main(args):
     num_classes = len(config['class_names'])
 
     train_files = read_list(args.path_list_files, args.train_list)
-    val_files = read_list(args.path_list_files, args.val_list)
-    if config['ssl_add_labeled']:
-        train_files = train_files + val_files
+    val_files = [f for name in args.val_lists for f in read_list(args.path_list_files, name)]
+    logging.info(f'SSL training files: {len(train_files)}, validation files: {len(val_files)}')
 
     datasets = [make_dataset(args.dataset, args.dataset_folder, files, args.number_of_points)
                 for files in (train_files, val_files)]
