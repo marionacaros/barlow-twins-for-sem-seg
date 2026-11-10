@@ -93,6 +93,19 @@ With PointNet, pre-training adds 3.1 mIoU points (+6% relative) and improves IoU
 
 The pre-trained models outperform training from scratch on both datasets. The gap is largest when few labels are available.
 
+### New experiment: DALES without ground
+
+This experiment is not in the paper. Ground points are removed before resampling, which leaves 7 classes (label = DALES code − 2), and z is min-max scaled to [0, 1] per window. Windows that are (almost) all ground are left out of the split lists (`train_test_files/dales_25x25_noground_barlow_10/`). Barlow Twins runs for 150 epochs on the labeled and unlabeled train windows, with 5,000 points sampled per window, so the two 4,096-point views are different subsamplings. Here the Barlow Twins encoder starts from random weights, not from a supervised encoder, and no deduplication is applied. Fine-tuning runs for 150 epochs. Trucks, power lines, fences and poles get double weight in the loss. `scripts/run_dales_noground.sh` runs the whole experiment.
+
+**DALES without ground, 10% of labeled data** (PointNet, split-level IoU on all 4,379 test windows)
+
+| Method | Veg. | Car | Truck | Wires | Fence | Pole | Build. | mIoU (%) | OA (%) |
+|---|---|---|---|---|---|---|---|---|---|
+| PointNet | 85.6 | 4.4 | 1.4 | 54.0 | 9.0 | 4.7 | 79.4 | 34.1 | 89.5 |
+| SSL + PointNet | **86.7** | **11.4** | **2.5** | **58.6** | **11.7** | **9.9** | **80.7** | **37.4** | **90.2** |
+
+Pre-training adds 3.3 mIoU points (+10% relative) and improves every class. The largest gains are on the rare classes: car IoU goes from 4.4 to 11.4, pole IoU from 4.7 to 9.9, and wire IoU rises by 4.6 points. Removing ground also lifts wire IoU from 6.1 (paper setup) to 58.6, but the two setups use different classes and test points, so their numbers cannot be compared directly.
+
 ## Repository structure
 
 ```

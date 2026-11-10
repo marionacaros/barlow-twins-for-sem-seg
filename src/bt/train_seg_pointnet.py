@@ -15,6 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 from src.datasets import DATASETS, make_dataset
 from src.models.barlow_twins import BarlowTwins
 from src.models.pointnet import SegmentationPointNet
+from src.utils.class_weights import WEIGHTING_METHODS, count_points_per_class, isns_weights
 from src.utils.get_metrics import SegmentationMetrics
 from src.utils.mlflow_utils import MLflowRun, add_mlflow_args, experiment_name
 from src.utils.train_utils import (get_device, load_checkpoint, make_generator, read_list,
@@ -81,7 +82,8 @@ def train(dataset,
           save_after_epoch,
           device,
           mlflow_uri=None,
-          mlflow_experiment=None):
+          mlflow_experiment=None,
+          weighting='fixed'):
     """
     Fine-tune PointNet for semantic segmentation, optionally starting from a Barlow Twins encoder. Logs to TensorBoard
     (and MLflow when `mlflow_uri` is given) and saves the checkpoint with the best validation loss.
@@ -98,6 +100,7 @@ def train(dataset,
     :param model_checkpoint: str, Barlow Twins .ckpt ('' to train from scratch)
     :param val_fraction: float, share of labeled files used for validation (split by block)
     :param seed: int
+    :param weighting: str, 'fixed' (DATASETS class_weights) or 'isns' (1/sqrt of the training points per class)
     :param checkpoint_dir: str, folder for checkpoints
     :param log_dir: str, TensorBoard folder
     :param save_after_epoch: int, also save every epoch after this one (-1: only the best)
@@ -119,6 +122,8 @@ def train(dataset,
     logging.info(f'Labeled files: {len(labeled_files)} (train {len(train_files)}, val {len(val_files)})')
 
     name = f'_{dataset}_{os.path.basename(os.path.normpath(path_list_files))}'
+    if weighting != 'fixed':
+        name += f'_{weighting}'
     if model_checkpoint:
         name += '_barlow_' + os.path.basename(model_checkpoint).split('-')[0]
 
@@ -165,11 +170,21 @@ def train(dataset,
 
     optimizer = optim.Adam(pointnet.parameters(), lr=learning_rate)
 
-    c_weights = torch.FloatTensor(config['class_weights']).to(device) if config['class_weights'] else None
+    if weighting == 'isns':
+        # inverse square root of the number of training points per class
+        counts = count_points_per_class(train_dataset, num_classes, batch_size, number_of_workers)
+        class_weights = isns_weights(counts).tolist()
+        logging.info('Training points per class: ' + ', '.join(f'{c} {n}' for c, n in zip(class_names, counts)))
+    else:
+        class_weights = config['class_weights']
+    logging.info('Class weights (%s): %s', weighting,
+                 ', '.join(f'{c} {w:.3f}' for c, w in zip(class_names, class_weights or [])))
+    c_weights = torch.FloatTensor(class_weights).to(device) if class_weights else None
     ce_loss = torch.nn.CrossEntropyLoss(weight=c_weights, reduction='mean', ignore_index=-1)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=config['milestones'], gamma=0.5)
 
-    params.update(n_train=len(train_files), n_val=len(val_files), trainable_params=total_params)
+    params.update(n_train=len(train_files), n_val=len(val_files), trainable_params=total_params,
+                  class_weights=[round(w, 4) for w in class_weights or []])
     with MLflowRun(mlflow_uri, experiment_name(mlflow_experiment, dataset), run_name=f'finetune{name}',
                    params={k: v for k, v in params.items() if not k.startswith('mlflow')},
                    tags={'stage': 'finetune', 'init': 'barlow_twins' if model_checkpoint else 'scratch'}) as run:
@@ -233,6 +248,7 @@ def train(dataset,
             if epoch_val_loss < best_vloss:
                 best_path = save_checkpoint(ckpt_name, epoch, epochs_since_improvement, pointnet, optimizer,
                                             val_metrics.accuracy(), batch_size, learning_rate, n_points,
+                                            weighing_method=weighting, weights=class_weights,
                                             checkpoint_dir=checkpoint_dir, extra={'mlflow_run_id': run.run_id})
                 run.set_tags({'best_checkpoint': best_path})
                 run.log_metrics({'best_val_loss': epoch_val_loss, 'best_epoch': epoch}, step=epoch)
@@ -246,6 +262,7 @@ def train(dataset,
             if 0 <= save_after_epoch < epoch:
                 save_checkpoint(f'{ckpt_name}_ep{epoch}', epoch, epochs_since_improvement, pointnet, optimizer,
                                 val_metrics.accuracy(), batch_size, learning_rate, n_points,
+                                weighing_method=weighting, weights=class_weights,
                                 checkpoint_dir=checkpoint_dir, extra={'mlflow_run_id': run.run_id})
 
     writer_train.close()
@@ -277,6 +294,9 @@ def parse_args():
     parser.add_argument('--model_checkpoint', type=str, default='',
                         help='Barlow Twins (.ckpt) checkpoint to start from')
     parser.add_argument('--seed', type=int, default=42, help='random seed')
+    parser.add_argument('--weighting', choices=WEIGHTING_METHODS, default='fixed',
+                        help="class weights: 'fixed' (DATASETS class_weights) or 'isns' (1/sqrt(points per class), "
+                             "counted on the training windows)")
     parser.add_argument('--checkpoint_dir', type=str, default='src/checkpoints', help='where to save checkpoints')
     parser.add_argument('--log_dir', type=str, default='src/runs/bt', help='TensorBoard log folder')
     parser.add_argument('--save_after_epoch', type=int, default=-1,
@@ -308,6 +328,7 @@ def main(args):
           model_checkpoint=args.model_checkpoint,
           val_fraction=args.val_fraction,
           seed=args.seed,
+          weighting=args.weighting,
           checkpoint_dir=args.checkpoint_dir,
           log_dir=args.log_dir,
           save_after_epoch=args.save_after_epoch,

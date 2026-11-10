@@ -81,3 +81,27 @@ def test_mlflow_run_disabled_without_uri():
         run.log_metrics({'loss': 1.0, 'iou': float('nan')}, step=0)
         run.set_tags({'t': 'x'})
     assert run.run_id is None and not run.enabled
+
+
+def test_isns_weights():
+    import numpy as np
+    from src.utils.class_weights import isns_weights
+    w = isns_weights([10000, 100, 0])
+    # 1/sqrt(n), the empty class gets the largest weight, mean 1
+    assert np.isclose(w[1] / w[0], 10.0)
+    assert np.isclose(w[2], w[1])
+    assert np.isclose(w.mean(), 1.0)
+
+
+def test_count_points_per_class():
+    import torch
+    from src.utils.class_weights import count_points_per_class
+
+    class Toy(torch.utils.data.Dataset):
+        def __len__(self):
+            return 2
+
+        def __getitem__(self, i):
+            return torch.zeros(4, 3), torch.tensor([0, 0, 2, -1]), f'f{i}'
+
+    assert count_points_per_class(Toy(), 3, batch_size=2).tolist() == [4, 0, 2]
