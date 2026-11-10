@@ -338,8 +338,10 @@ def main(args):
     with MLflowRun(args.mlflow_uri, experiment_name(args.mlflow_experiment, 'cat3'), run_name=f'finetune_{name}',
                    params={k: v for k, v in vars(args).items() if not k.startswith('mlflow')},
                    tags={'stage': 'finetune', 'init': 'barlow_twins' if args.checkpoint else 'scratch'}) as run:
+        
         best_loss_val = np.inf
         for epoch in range(args.epoch):
+            
             log_string('**** Epoch %d/%s ****' % (epoch + 1, args.epoch))
             # step decay: lr * lr_decay every step_size epochs (never below LEARNING_RATE_CLIP);
             # BatchNorm momentum decays the same way (never below MOMENTUM_CLIP)

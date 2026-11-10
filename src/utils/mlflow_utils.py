@@ -9,6 +9,21 @@ import logging
 import math
 import os
 
+# the MLflow 3 UI shows experiments without this tag as GenAI experiments (traces, no metric charts)
+EXPERIMENT_KIND_TAG = 'mlflow.experimentKind'
+EXPERIMENT_KIND = 'custom_model_development'
+
+
+def mark_ml_experiment(client, experiment_id):
+    """
+    Tag an experiment as a model-training experiment, so the MLflow UI shows its runs and metric charts.
+
+    :param client: mlflow.MlflowClient
+    :param experiment_id: str
+    """
+    if EXPERIMENT_KIND_TAG not in client.get_experiment(experiment_id).tags:
+        client.set_experiment_tag(experiment_id, EXPERIMENT_KIND_TAG, EXPERIMENT_KIND)
+
 
 def add_mlflow_args(parser):
     """
@@ -88,6 +103,7 @@ class MLflowRun:
             mlflow.set_experiment(self.experiment)
             run = mlflow.start_run(run_name=self.run_name)
         self.run_id = run.info.run_id
+        mark_ml_experiment(mlflow.MlflowClient(), run.info.experiment_id)
         if self.params:
             mlflow.log_params({k: str(v)[:6000] for k, v in self.params.items()})
         if self.tags:
@@ -139,6 +155,7 @@ def lightning_loggers(output_dir, uri, experiment, run_name, params):
     if uri:
         mlflow_logger = MLFlowLogger(experiment_name=experiment, run_name=run_name, tracking_uri=uri,
                                      log_model=False)
+        mark_ml_experiment(mlflow_logger.experiment, mlflow_logger.experiment_id)
         mlflow_logger.log_hyperparams({k: str(v)[:6000] for k, v in params.items()})
         logging.info(f'MLflow run {mlflow_logger.run_id} ({uri})')
         loggers.append(mlflow_logger)
